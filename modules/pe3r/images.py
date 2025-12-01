@@ -2,7 +2,6 @@ import numpy as np
 import torch
 from PIL import Image
 from modules.mobilesamv2.utils.transforms import ResizeLongestSide
-
 from modules.dust3r.utils.image import _resize_pil_image
 
 class Images:
@@ -16,7 +15,14 @@ class Images:
         tmp_images = []
         first_image_size = None
         all_images_same_size = True
+        
         for img_path in filelist:
+            # === [수정된 부분 시작] ===
+            # Gradio TempFile 객체에서 파일 경로(String)만 추출
+            if hasattr(img_path, 'name'):
+                img_path = img_path.name
+            # === [수정된 부분 끝] ===
+
             pil_image = Image.open(img_path).convert("RGB")
             tmp_images.append(pil_image)
 
