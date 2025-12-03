@@ -4,8 +4,14 @@
 ### Quick Start
 #### Install
 ```bash
-conda create --name yoloe3r python=3.10
+conda create --name yoloe3r python=3.13
 conda activate yoloe3r
+
+'''bash
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+(본인 버전에 맞는 pytorch를 설치하세요)
+
+
 git clone 
 pip install requirements.txt
 ```
