@@ -52,6 +52,9 @@ def make_one_image_to_three(api_key: str, model_name: str, input_image_path: str
     """
 
     # (2) 방향별 세부 지시. (Left / Right)
+    # 기존 실험에서는 -30°, 정면, 30°가 가장 잘 나왔음
+    # 모델이 gemini-3.0-flash로 변경되면서 최적 각도가 달라짐
+    # 현재는 30°와 가장 유사한 40°를 사용하도록 프롬프트를 설정.
     prompts_by_direction = {
         "left": """
         [작업: 왼쪽(Yaw -40°)]
@@ -174,4 +177,5 @@ if __name__ == "__main__":
         make_one_image_to_three(API_KEY, STYLE_MODEL, TEST_INPUT_PATH)
     else:
         print(f"테스트를 위한 입력 파일({TEST_INPUT_PATH})이 없습니다.")
+
         print("먼저 1번 과정(스타일 변환)을 실행하여 이미지를 생성해주세요.")
