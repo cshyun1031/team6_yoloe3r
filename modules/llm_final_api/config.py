@@ -23,9 +23,9 @@ if not API_KEY:
 
 # 3장의 최초 입력 이미지 경로
 INITIAL_IMAGE_PATHS = [
-    "C:/Users/minso/Desktop/report_3imgs/room_a.jpg", 
-    "C:/Users/minso/Desktop/report_3imgs/room_b.jpg",
-    "C:/Users/minso/Desktop/report_3imgs/room_e.jpg"
+    "C:/Users/minso/Desktop/report_3imgs/room_30degree.jpg", 
+    "C:/Users/minso/Desktop/report_3imgs/room_origin.jpg",
+    "C:/Users/minso/Desktop/report_3imgs/room_-30degree.jpg"
 ]
 
 # 3장 중 AI가 선택한 '최적 이미지'가 임시로 저장될 경로
@@ -37,6 +37,7 @@ SELECTED_IMAGE_PATH = "selected_input_image.jpg"
 
 REPORT_MODEL = "gemini-2.5-flash" # 리포트 생성 모델
 STYLE_MODEL = "gemini-2.5-flash-image"  # 이미지 출력 모델
+
 
 
 
