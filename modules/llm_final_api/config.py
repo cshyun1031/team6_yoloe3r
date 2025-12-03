@@ -1,4 +1,4 @@
-API_KEY = "AIzaSyAwYDv41B75t0f10qp4GSadUEEPt7plMzg"  # 여기에 실제 API 키 입력
+API_KEY = "APIKEY"  # 여기에 실제 API 키 입력
 
 # 3장의 최초 입력 이미지 경로
 INITIAL_IMAGE_PATHS = [
