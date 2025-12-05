@@ -1,8 +1,7 @@
 import time
 import json
 # 1. 상대 경로 임포트를 절대 경로 임포트로 수정
-from config import * 
-from report.utils.report_parser import parse_report_output
+from config import * from report.utils.report_parser import parse_report_output
 from report.report_client import run_report_model
 from report.report_prompt import report_prompt
 from ultralytics import YOLOE # select_best_image 로직을 YOLOE로 대체했으므로 
@@ -10,7 +9,7 @@ import shutil
 from typing import Dict, Any
 
 # =========================================================================
-# 수정된 함수: 요약 리포트 파일 생성 (토글 구조 및 포맷 간소화 반영)
+# 수정된 함수: 요약 리포트 파일 생성 (토글 구조 반영)
 # =========================================================================
 def create_summary_report_file(parsed_data: Dict[str, Any], raw_report_text: str):
     """
@@ -45,26 +44,25 @@ def create_summary_report_file(parsed_data: Dict[str, Any], raw_report_text: str
 # 전체적인 분위기는 **{parsed_data.get("general_style", "{분위기1}하고 {분위기2}한 {분위기3}")} 스타일**입니다.
 
 ## 1. 분위기 정의 및 유형별 확률
-* **{mood1['word']}**({mood1['percentage']}%)
-* **{mood2['word']}**({mood2['percentage']}%)
-* **{mood3['word']}**({mood3['percentage']}%)
+* **{{"{mood1['word']}"}}({mood1['percentage']}%)**: 
+* **{{"{mood2['word']}"}}({mood2['percentage']}%)**: 
+* **{{"{mood3['word']}"}}({mood3['percentage']}%)**: 
 
 ## 2. 가구 추가 / 제거 / 변경 추천
-###2-1 **현재 분위기에 맞춰 추가하면 좋을 가구 추천**
-* **{add_item}**
+3-1 **현재 분위기에 맞춰 추가하면 좋을 가구 추천**
+* **{add_item}** : 
 
-###2-2 **제거하면 좋을 가구 추천**
-* **{rem_item}**
+3-2 **제거하면 좋을 가구 추천**
+* **{rem_item}** : 
 
-###2-3 **분위기별 바꿨으면 하는 가구 추천**
-* **{change_item} -> {rec_item}**
+3-3 **분위기별 바꿨으면 하는 가구 추천**
+* **{change_item} -> {rec_item}** : 
 
 ## 3. 이런 스타일 어떠세요? 
-**{rec_style}** 
-
+**{rec_style}** : 
 
 <details>
-<summary>### 상세 분석 및 추천 근거 (전체 리포트 보기)</summary>
+<summary>**상세 분석 및 추천 근거 (전체 리포트 보기)**</summary>
 
 {raw_report_text}
 
@@ -144,4 +142,3 @@ if __name__ == "__main__":
         print("오류: 'INITIAL_IMAGE_PATHS' 변수를 config.py에서 찾을 수 없습니다. config.py 파일과 변수 이름을 확인하세요.")
     except Exception as e:
         print(f"스크립트 실행 중 예상치 못한 에러 발생: {e}")
-
