@@ -1,8 +1,7 @@
 import time
 import json
 # 1. 상대 경로 임포트를 절대 경로 임포트로 수정
-from config import 
-* from report.utils.report_parser import parse_report_output
+from config import * from report.utils.report_parser import parse_report_output
 from report.report_client import run_report_model
 from report.report_prompt import report_prompt
 from ultralytics import YOLOE # select_best_image 로직을 YOLOE로 대체했으므로 
@@ -10,40 +9,50 @@ import shutil
 from typing import Dict, Any
 
 # =========================================================================
-# 수정된 함수: 요약 리포트 파일 생성 (토글 구조 및 포맷 간소화 반영)
+# 수정된 함수: 요약 리포트 파일 생성 (토글 구조 및 요청된 출력 형식 반영)
 # =========================================================================
 def create_summary_report_file(parsed_data: Dict[str, Any], raw_report_text: str):
     """
     파싱된 데이터를 기반으로 Gradio UI에 보여줄 요약 리포트 템플릿을 생성합니다.
-    필수 항목만 간략하게 작성하며, 상세 내용은 <details><summary> 태그 안에 전체 원본 텍스트를 포함합니다.
+    사용자께서 요청하신 정확한 출력 형식과 헤딩 레벨을 반영하여 수정했습니다.
     """
     
     # 데이터 구조 확인 및 기본값 설정
     mood_details = parsed_data.get("mood_details", [])
-    mood1 = mood_details[0] if len(mood_details) > 0 else {"word": "{분위기1}", "percentage": "{확률1}"}
-    mood2 = mood_details[1] if len(mood_details) > 1 else {"word": "{분위기2}", "percentage": "{확률2}"}
-    mood3 = mood_details[2] if len(mood_details) > 2 else {"word": "{분위기3}", "percentage": "{확률3}"}
+    
+    # 1. 분위기 정의 및 유형별 확률 데이터 추출 및 기본값 설정
+    mood1_word = mood_details[0].get("word", "{분위기1}") if len(mood_details) > 0 else "{분위기1}"
+    # percentage는 문자열로 변환합니다.
+    mood1_percent = str(mood_details[0].get("percentage", "{확률1}")) if len(mood_details) > 0 else "{확률1}"
+    mood2_word = mood_details[1].get("word", "{분위기2}") if len(mood_details) > 1 else "{분위기2}"
+    mood2_percent = str(mood_details[1].get("percentage", "{확률2}")) if len(mood_details) > 1 else "{확률2}"
+    mood3_word = mood_details[2].get("word", "{분위기3}") if len(mood_details) > 2 else "{분위기3}"
+    mood3_percent = str(mood_details[2].get("percentage", "{확률3}")) if len(mood_details) > 2 else "{확률3}"
 
+    # 2. 가구 추천 데이터 추출 및 기본값 설정
     rec_add = parsed_data.get("recommendations_add", [])
-    add_item = rec_add[0].get("item", "{추가 가구}") if rec_add else "{추가 가구}"
+    add_item = rec_add[0].get("item", "{추가 가구}") if rec_add and rec_add[0].get("item") else "{추가 가구}"
 
     rec_rem = parsed_data.get("recommendations_remove", [])
-    rem_item = rec_rem[0].get("item", "{제거 가구}") if rec_rem else "{제거 가구}"
+    rem_item = rec_rem[0].get("item", "{제거 가구}") if rec_rem and rec_rem[0].get("item") else "{제거 가구}"
 
     rec_change = parsed_data.get("recommendations_change", [])
-    if rec_change:
-        change_item = rec_change[0].get("from_item", "{변경 가구}")
-        rec_item = rec_change[0].get("to_item", "{추천 가구}")
+    if rec_change and rec_change[0].get("from_item") and rec_change[0].get("to_item"):
+        change_item = rec_change[0].get("from_item")
+        rec_item = rec_change[0].get("to_item")
     else:
         change_item = "{변경 가구}"
         rec_item = "{추천 가구}"
 
+    # 3. 추천 스타일 데이터 추출 및 기본값 설정
     rec_styles = parsed_data.get("recommended_styles", [])
-    rec_style = rec_styles[0].get("style", "{추천 분위기}") if rec_styles else "{추천 분위기}"
+    rec_style = rec_styles[0].get("style", "{추천 분위기}") if rec_styles and rec_styles[0].get("style") else "{추천 분위기}"
+    
+    # 전체 분위기 스타일 (general_style)
+    general_style = parsed_data.get("general_style", "{분위기1}하고 {분위기2}한 {분위기3}")
 
     # =====================================================================
-    # 수정: raw_report_text의 목차 번호를 요약 리포트 형식에 맞게 변경
-    # LLM이 출력한 원본 리포트 (3번, 4번) -> 요약 리포트의 목차 (2번, 3번)으로 치환
+    # raw_report_text의 목차 번호를 요약 리포트 형식에 맞게 변경 (토글 내용)
     # =====================================================================
     modified_raw_text = raw_report_text.replace(
         "## 4. 이런 스타일 어떠세요?",
@@ -54,26 +63,24 @@ def create_summary_report_file(parsed_data: Dict[str, Any], raw_report_text: str
         "## 2. 가구 추천"
     )
 
+    # =====================================================================
+    # 최종 요약 콘텐츠 생성 (사용자 요청 형식: ### 헤딩 및 단일 라인 포맷)
+    # =====================================================================
     summary_content = f"""
-# 전체적인 분위기는 **{parsed_data.get("general_style", "{분위기1}하고 {분위기2}한 {분위기3}")} 스타일**입니다.
+## 전체적인 분위기는 **{general_style} 스타일**입니다.
 
-## 1. 분위기 정의 및 유형별 확률
-* **{mood1['word']}**({mood1['percentage']}%)
-* **{mood2['word']}**({mood2['percentage']}%)
-* **{mood3['word']}**({mood3['percentage']}%)
+### 1. 분위기 정의 및 유형별 확률
+** {mood1_word} ** ({mood1_percent}%), {mood2_word} ({mood2_percent}%), {mood3_word} ({mood3_percent}%)
 
-## 2. 가구 추가 / 제거 / 변경 추천
-2-1 **현재 분위기에 맞춰 추가하면 좋을 가구 추천**
-* **{add_item}**
+### 2. 가구 추가 / 제거 / 변경 추천 
+추가하면 좋을 가구 추천: ** {add_item} **
+제거하면 좋을 가구 추천: ** {rem_item} **
+바꿨으면 하는 가구 추천: ** {change_item} -> {rec_item} **
 
-2-2 **제거하면 좋을 가구 추천**
-* **{rem_item}**
+### 3. 이런 스타일 어떠세요?
+** {rec_style} **
 
-2-3 **분위기별 바꿨으면 하는 가구 추천**
-* **{change_item} -> {rec_item}**
-
-## 3. 이런 스타일 어떠세요? 
-**{rec_style}** <details>
+<details>
 <summary>### 상세 분석 및 추천 근거 (전체 리포트 보기)</summary>
 
 {modified_raw_text}
@@ -154,4 +161,3 @@ if __name__ == "__main__":
         print("오류: 'INITIAL_IMAGE_PATHS' 변수를 config.py에서 찾을 수 없습니다. config.py 파일과 변수 이름을 확인하세요.")
     except Exception as e:
         print(f"스크립트 실행 중 예상치 못한 에러 발생: {e}")
-
