@@ -1,8 +1,7 @@
 import time
 import json
 # 1. 상대 경로 임포트를 절대 경로 임포트로 수정
-from config import * 
-from report.utils.report_parser import parse_report_output
+from config import * from report.utils.report_parser import parse_report_output
 from report.report_client import run_report_model
 from report.report_prompt import report_prompt
 from ultralytics import YOLOE # select_best_image 로직을 YOLOE로 대체했으므로 
@@ -41,31 +40,42 @@ def create_summary_report_file(parsed_data: Dict[str, Any], raw_report_text: str
     rec_styles = parsed_data.get("recommended_styles", [])
     rec_style = rec_styles[0].get("style", "{추천 분위기}") if rec_styles else "{추천 분위기}"
 
+    # =====================================================================
+    # 수정: raw_report_text의 목차 번호를 요약 리포트 형식에 맞게 변경
+    # LLM이 출력한 원본 리포트 (3번, 4번) -> 요약 리포트의 목차 (2번, 3번)으로 치환
+    # =====================================================================
+    modified_raw_text = raw_report_text.replace(
+        "## 4. 이런 스타일 어떠세요?",
+        "## 3. 이런 스타일 어떠세요?"
+    )
+    modified_raw_text = modified_raw_text.replace(
+        "## 3. 가구 추천",
+        "## 2. 가구 추천"
+    )
+
     summary_content = f"""
 # 전체적인 분위기는 **{parsed_data.get("general_style", "{분위기1}하고 {분위기2}한 {분위기3}")} 스타일**입니다.
 
 ## 1. 분위기 정의 및 유형별 확률
-- **{mood1['word']}**({mood1['percentage']}%)
-- **{mood2['word']}**({mood2['percentage']}%)
-- **{mood3['word']}**({mood3['percentage']}%)
+* **{mood1['word']}**({mood1['percentage']}%)
+* **{mood2['word']}**({mood2['percentage']}%)
+* **{mood3['word']}**({mood3['percentage']}%)
 
 ## 2. 가구 추가 / 제거 / 변경 추천
-3-1 **현재 분위기에 맞춰 추가하면 좋을 가구 추천**
-- **{add_item}**
+2-1 **현재 분위기에 맞춰 추가하면 좋을 가구 추천**
+* **{add_item}**
 
-3-2 **제거하면 좋을 가구 추천**
-- **{rem_item}**
+2-2 **제거하면 좋을 가구 추천**
+* **{rem_item}**
 
-3-3 **분위기별 바꿨으면 하는 가구 추천**
-- **{change_item} -> {rec_item}**
+2-3 **분위기별 바꿨으면 하는 가구 추천**
+* **{change_item} -> {rec_item}**
 
 ## 3. 이런 스타일 어떠세요? 
-- **{rec_style}** 
-
-<details>
+**{rec_style}** <details>
 <summary>### 상세 분석 및 추천 근거 (전체 리포트 보기)</summary>
 
-{raw_report_text}
+{modified_raw_text}
 
 </details>
 """
