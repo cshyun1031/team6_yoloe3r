@@ -8,15 +8,17 @@ from report.report_prompt import report_prompt
 from ultralytics import YOLOE # select_best_image 로직을 YOLOE로 대체했으므로 
 import shutil
 from typing import Dict, Any
+import re # 정규표현식 임포트 추가
 
 # =========================================================================
-# 수정된 함수: 요약 리포트 파일 생성 (요청된 report_summarize.txt 형식 반영 및 중괄호 제거 로직 추가)
+# 수정된 함수: 요약 리포트 파일 생성 (추천 분위기 파싱 실패 시 대체 로직 추가 및 별표 포맷 수정)
 # =========================================================================
 def create_summary_report_file(parsed_data: Dict[str, Any], raw_report_text: str):
     """
     파싱된 데이터를 기반으로 Gradio UI에 보여줄 요약 리포트 템플릿을 생성합니다.
     요청하신 report_summarize.txt 형식에 맞춰 내용을 구성하며,
-    LLM 출력의 잔여 플레이스홀더({})를 제거하는 로직을 추가합니다.
+    LLM 출력의 잔여 플레이스홀더({})를 제거하는 로직을 추가하고,
+    '추천 분위기' 파싱 실패 시 raw_report_text에서 직접 추출하는 대체 로직을 추가합니다.
     """
     
     def clean_brace(text: Any, default_text: str) -> str:
@@ -31,7 +33,6 @@ def create_summary_report_file(parsed_data: Dict[str, Any], raw_report_text: str
     
     # 1. 분위기 정의 및 유형별 확률 데이터 추출 및 중괄호 제거
     mood1_word = clean_brace(mood_details[0].get("word") if len(mood_details) > 0 else None, "{분위기1}")
-    # percentage는 문자열로 변환하고 중괄호 제거는 적용하지 않음 (숫자로 가정)
     mood1_percent = str(mood_details[0].get("percentage", "{확률1}")) if len(mood_details) > 0 else "{확률1}"
     
     mood2_word = clean_brace(mood_details[1].get("word") if len(mood_details) > 1 else None, "{분위기2}")
@@ -42,47 +43,57 @@ def create_summary_report_file(parsed_data: Dict[str, Any], raw_report_text: str
 
     # 2. 가구 추천 데이터 추출 및 중괄호 제거
     rec_add = parsed_data.get("recommendations_add", [])
+    # report_parser.py에서 첫 번째 항목만 파싱하므로, 여기서도 첫 번째 항목만 사용
     add_item = clean_brace(rec_add[0].get("item") if rec_add and rec_add[0].get("item") else None, "{추가 가구}")
 
     rec_rem = parsed_data.get("recommendations_remove", [])
     rem_item = clean_brace(rec_rem[0].get("item") if rec_rem and rec_rem[0].get("item") else None, "{제거 가구}")
 
     rec_change = parsed_data.get("recommendations_change", [])
+    # 요청에 따라 첫 번째 변경 추천 항목만 사용 (rec_change[0])
     if rec_change and rec_change[0].get("from_item") and rec_change[0].get("to_item"):
         change_item = clean_brace(rec_change[0].get("from_item"), "{변경 가구}")
         rec_item = clean_brace(rec_change[0].get("to_item"), "{추천 가구}")
     else:
-        # 파싱 실패 시 기본값은 중괄호를 유지하여 문제 파악이 용이하도록 합니다.
         change_item = "{변경 가구}"
         rec_item = "{추천 가구}"
 
     # 3. 추천 스타일 데이터 추출 및 중괄호 제거
     rec_styles = parsed_data.get("recommended_styles", [])
     rec_style_default = "{추천 분위기}"
+    # report_parser.py에서 첫 번째 항목만 파싱하므로, 여기서도 첫 번째 항목만 사용
     rec_style_val = rec_styles[0].get("style") if rec_styles and rec_styles[0].get("style") else None
-    # 파싱이 성공하면 중괄호 제거, 실패하면 기본값 유지
     rec_style = clean_brace(rec_style_val, rec_style_default)
     
+    # ===== '추천 분위기' 파싱 실패 시 대체 로직 추가 (report_parser.py 수정으로 필요 없을 수 있지만 안전을 위해 유지) =====
+    if rec_style == rec_style_default:
+        # ## 4. 이런 스타일 어떠세요? 섹션의 첫 번째 항목 추출 시도
+        match = re.search(r"##\s*4\.\s*이런 스타일 어떠세요\?\s*\n-\s*\*\*(.*?)\*\*\s*:\s*", raw_report_text, re.DOTALL)
+        if match:
+            # 스타일명만 추출 (예: '스칸디나비아 + 보헤미안 퓨전' 추출)
+            rec_style = clean_brace(match.group(1).strip(), rec_style_default)
+    # ===================================================================
+
     # 전체 분위기 스타일 (general_style) 추출 및 중괄호 제거
     general_style_raw = parsed_data.get("general_style", "{분위기1}하고 {분위기2}한 {분위기3}")
     general_style = clean_brace(general_style_raw, "{분위기1}하고 {분위기2}한 {분위기3}")
 
     # =====================================================================
-    # 최종 요약 콘텐츠 생성 (요청된 NEW 형식에 맞게 수정)
+    # 최종 요약 콘텐츠 생성 (요청된 형식 및 별표 포맷 수정 적용)
     # =====================================================================
     summary_content = f"""
-전체적인 분위기는 {general_style} 스타일입니다.
+전체적인 분위기는 **{general_style}** 스타일입니다.
 
 ### 1. 분위기 정의 및 유형별 확률
 {mood1_word} ({mood1_percent}%), {mood2_word} ({mood2_percent}%), {mood3_word} ({mood3_percent}%)
 
 ### 2. 가구 추가 / 제거 / 변경 추천
-추가하면 좋을 가구 추천: ** {add_item} **
-제거하면 좋을 가구 추천: ** {rem_item} **
-바꿨으면 하는 가구 추천: ** {change_item} -> {rec_item} **
+추가하면 좋을 가구 추천: **{add_item}**
+제거하면 좋을 가구 추천: **{rem_item}**
+바꿨으면 하는 가구 추천: **{change_item} -> {rec_item}**
 
 ### 3. 이런 스타일 어떠세요?
-{rec_style}
+**{rec_style}**
 
 <details>
 
