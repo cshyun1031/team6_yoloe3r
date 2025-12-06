@@ -152,9 +152,10 @@ def main_report(img_path):
         parsed_data = parse_report_output(raw_report_text)
 
         # 1. 원본 리포트 파일 저장 (기존 report_analysis_result.txt)
-        report_output_path = "report_analysis_result.txt"
-        with open(report_output_path, "w", encoding="utf-8") as f:
-            f.write(raw_report_text)
+        # 요청에 따라 이 파일을 생성하는 코드를 삭제합니다.
+        # report_output_path = "report_analysis_result.txt"
+        # with open(report_output_path, "w", encoding="utf-8") as f:
+        #     f.write(raw_report_text)
 
         # 2. 파싱된 JSON 파일 저장
         parsed_json_path = "parsed_report.json"
@@ -164,7 +165,7 @@ def main_report(img_path):
         # 3. 요약 리포트 파일 생성 (report_summarize.txt)
         summary_path = create_summary_report_file(parsed_data, raw_report_text)
         
-        # 이 부분이 UI/다음 단계에 전달될 최종 아웃풋 파일 경로입니다. ⭐⭐⭐
+        # 이 부분이 UI/다음 단계에 전달될 최종 아웃풋 파일 경로입니다.
         return summary_path 
 
     except Exception as e:
