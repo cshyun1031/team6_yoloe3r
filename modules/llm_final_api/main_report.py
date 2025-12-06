@@ -1,5 +1,8 @@
+# modules/llm_final_api/main_report.py
+
 import time
 import json
+# 1. 상대 경로 임포트를 절대 경로 임포트로 수정
 from .config import * 
 from .report.utils.report_parser import parse_report_output
 from .report.report_client import run_report_model
@@ -161,7 +164,7 @@ def main_report(img_path):
         # 3. 요약 리포트 파일 생성 (report_summarize.txt)
         summary_path = create_summary_report_file(parsed_data, raw_report_text)
         
-        # UI/다음 단계에서 최종 리포트 파일 경로를 사용하도록 반환
+        # 이 부분이 UI/다음 단계에 전달될 최종 아웃풋 파일 경로입니다. ⭐⭐⭐
         return summary_path 
 
     except Exception as e:
