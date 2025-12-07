@@ -3,7 +3,7 @@ from google import genai
 from google.genai import types
 from PIL import Image # 이미지 저장 및 처리 
 import io # 바이트 스트림 처리 
-from config import API_KEY, STYLE_MODEL
+from .config import API_KEY, STYLE_MODEL
 
 LAST_VIEW_PROMPTS = {}
 
@@ -183,3 +183,4 @@ if __name__ == "__main__":
         print(f"테스트를 위한 입력 파일({TEST_INPUT_PATH})이 없습니다.")
 
         print("먼저 1번 과정(스타일 변환)을 실행하여 이미지를 생성해주세요.")
+
