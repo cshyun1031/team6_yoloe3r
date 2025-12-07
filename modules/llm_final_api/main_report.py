@@ -94,7 +94,7 @@ def create_summary_report_file(parsed_data: Dict[str, Any], raw_report_text: str
 ### 가구 제거: **{rem_item}** 
 ### 가구 변경: **{change_item} -> {rec_item}**
 
-** 3. 이런 스타일 어떠세요? **
+3. 이런 스타일 어떠세요?
 ### **{rec_style}**
 
 
@@ -186,5 +186,6 @@ if __name__ == "__main__":
         print("오류: 'INITIAL_IMAGE_PATHS' 변수를 config.py에서 찾을 수 없습니다. config.py 파일과 변수 이름을 확인하세요.")
     except Exception as e:
         print(f"스크립트 실행 중 예상치 못한 에러 발생: {e}")
+
 
 
