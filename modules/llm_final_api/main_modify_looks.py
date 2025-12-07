@@ -6,10 +6,12 @@ from .config import (
     API_KEY,
     STYLE_MODEL,
     SELECTED_IMAGE_PATH,
+    REPORT_MODEL,
 )
 
 from .edit.image_edit import run_image_edit
-from .main_1img23 import make_one_image_to_three  
+from .main_1img23 import make_one_image_to_three, LAST_VIEW_PROMPTS
+from .for_retry import ensure_image_generated, check_prompt_compliance
 
 PARSED_REPORT_PATH = "parsed_report.json" # main_report.py에서 생성
 USER_CHOICE_PATH = "modules/llm_final_api/user_choice.json" # 사용자 선택값 저장
@@ -23,6 +25,8 @@ def load_json(path: str):
 
 
 def main_modify_looks():
+    validation_detail_prompts: list[str] = []
+    
     # ------ 1. 입력 파일/경로 로드 ------
     try:
         parsed_report = load_json(PARSED_REPORT_PATH)
@@ -88,15 +92,19 @@ def main_modify_looks():
             f"{add_reason} "
             f"추가되는 가구는 방의 크기와 기존 동선을 해치지 않도록 적절한 위치와 크기로 배치하세요."
         )
+        validation_detail_prompts.append(edit_instruction_add)
 
         print(f"대상: {add_item}")
-        current_image_path = run_image_edit(
-            api_key=API_KEY,
-            model_name=STYLE_MODEL,
-            input_image_path=current_image_path,
-            base_style=base_style,
-            edit_instruction=edit_instruction_add,
-            step_name="add",
+        current_image_path = ensure_image_generated(
+            generate_fn=lambda: run_image_edit(
+                api_key=API_KEY,
+                model_name=STYLE_MODEL,
+                input_image_path=current_image_path,
+                base_style=base_style,
+                edit_instruction=edit_instruction_add,
+                step_name="add",
+            ),
+            original_path=current_image_path,
         )
     else:
         pass
@@ -111,20 +119,24 @@ def main_modify_looks():
             f"제거 후 생기는 빈 공간은 자연스럽게 보이도록 주변 가구와 조화를 이루게 하되, "
             f"새로운 큰 가구를 추가하지는 마세요."
         )
+        validation_detail_prompts.append(edit_instruction_remove)
 
         print(f"대상: {remove_item}")
-        current_image_path = run_image_edit(
-            api_key=API_KEY,
-            model_name=STYLE_MODEL,
-            input_image_path=current_image_path,
-            base_style=base_style,
-            edit_instruction=edit_instruction_remove,
-            step_name="remove",
+        current_image_path = ensure_image_generated(
+            generate_fn=lambda: run_image_edit(
+                api_key=API_KEY,
+                model_name=STYLE_MODEL,
+                input_image_path=current_image_path,
+                base_style=base_style,
+                edit_instruction=edit_instruction_remove,
+                step_name="remove",
+            ),
+            original_path=current_image_path,
         )
     else:
         pass
 
-    # ------ 4. 변경(change) 단계 ------
+    # ------ 5. 변경(change) 단계 ------
     if use_change and rec_change is not None:
         from_item = rec_change.get("from_item", "")
         to_item = rec_change.get("to_item", "")
@@ -135,25 +147,73 @@ def main_modify_looks():
             f"교체된 가구의 위치와 대략적인 크기는 기존과 비슷하게 유지하며, "
             f"방의 전체 구조와 다른 가구, 소품은 변경하지 마세요."
         )
+        validation_detail_prompts.append(edit_instruction_change)
 
         print(f"대상: {from_item} -> {to_item}")
-        current_image_path = run_image_edit(
-            api_key=API_KEY,
-            model_name=STYLE_MODEL,
-            input_image_path=current_image_path,
-            base_style=base_style,
-            edit_instruction=edit_instruction_change,
-            step_name="change",
+        current_image_path = ensure_image_generated(
+            generate_fn=lambda: run_image_edit(
+                api_key=API_KEY,
+                model_name=STYLE_MODEL,
+                input_image_path=current_image_path,
+                base_style=base_style,
+                edit_instruction=edit_instruction_change,
+                step_name="change",
+            ),
+            original_path=current_image_path,
         )
     else:
         pass
 
-    # ------ 5. 최종 결과물 저장 -------
+    # 가구 추가/제거/변경이 프롬프트대로 반영되었는지 확인
+    print("\n 가구 편집 결과 검수 시작 ---")
+
+    validation_prompt_first = """
+    이 이미지는 사용자가 요청한 가구 추가/제거/교체가 자연스럽게 반영되어야 합니다.
+    방의 구조와 다른 가구 배치는 유지하면서 선택된 항목만 바뀌었는지 확인하세요.
+    """
+
+    ok_first = check_prompt_compliance(
+        api_key=API_KEY,
+        model_name=REPORT_MODEL,
+        user_prompt=validation_prompt_first,
+        edited_image_path=current_image_path,
+        original_image_path=base_image_path,
+        extra_prompts=validation_detail_prompts,
+    )
+    print(f"[1차 검수 결과] {'PASS' if ok_first else 'FAIL'}")
+
+    if not ok_first:
+        print("[1차 검수] FAIL → 전체 편집 한 번 재시도")
+        # add/remove/change 전체 다시 수행
+        current_image_path = base_image_path
+        for prompt in validation_detail_prompts:
+            current_image_path = ensure_image_generated(
+                generate_fn=lambda p=prompt: run_image_edit(
+                    api_key=API_KEY,
+                    model_name=STYLE_MODEL,
+                    input_image_path=current_image_path,
+                    base_style=base_style,
+                    edit_instruction=p,
+                    step_name="retry",
+                ),
+                original_path=current_image_path,
+            )
+        ok_first = check_prompt_compliance(
+            api_key=API_KEY,
+            model_name=REPORT_MODEL,
+            user_prompt=validation_prompt_first,
+            edited_image_path=current_image_path,
+            original_image_path=base_image_path,
+            extra_prompts=validation_detail_prompts,
+        )
+        print(f"[1차 재검수 결과] {'PASS' if ok_first else 'FAIL'}")
+
+    # ------ 6. 최종 결과물 저장 -------
     final_image_path = current_image_path
 
     # 최종 결과를 항상 img4new3r_org.png 로 통일
     if os.path.exists(final_image_path) and final_image_path != ORG_IMAGE_PATH:
-        save_path = os.path.join('apioutput',ORG_IMAGE_PATH)
+        save_path = os.path.join('apioutput', ORG_IMAGE_PATH)
         shutil.copyfile(final_image_path, save_path)
     else:
         # 이미 ORG_IMAGE_PATH 를 쓰고 있었던 경우 
@@ -161,7 +221,7 @@ def main_modify_looks():
 
     print(f"3단계(추가/제거/변경)까지 완료된 최종 이미지: {final_image_path}")
 
-    # ------ 6. 좌&우 각도 이미지 생성 ------
+    # ------ 7. 좌&우 각도 이미지 생성 ------
     print("\n4단계: 좌&우 각도 이미지 생성")
 
     try:
@@ -174,3 +234,42 @@ def main_modify_looks():
         print("   - img4new3r_right.png")
     except Exception as e:
         print(f"4단계(좌/우 각도 생성) 중 에러 발생: {e}")
+
+    # ------ 8. 최종 이미지 프롬프트 준수 검수 ------
+    print("\n[2차 검수] 뷰 일관성 검수 시작 ---")
+
+    final_org_path = os.path.join("apioutput", ORG_IMAGE_PATH)
+    left_path = os.path.join("apioutput", "img4new3r_left.png")
+    right_path = os.path.join("apioutput", "img4new3r_right.png")
+
+    def validate_views():
+        ok_left = check_prompt_compliance(
+            api_key=API_KEY,
+            model_name=REPORT_MODEL,
+            user_prompt="카메라가 좌측으로 회전한 동일한 방이어야 합니다.",
+            edited_image_path=left_path,
+            original_image_path=final_org_path,
+            extra_prompts=[LAST_VIEW_PROMPTS.get("left", "")],
+        )
+        ok_right = check_prompt_compliance(
+            api_key=API_KEY,
+            model_name=REPORT_MODEL,
+            user_prompt="카메라가 우측으로 회전한 동일한 방이어야 합니다.",
+            edited_image_path=right_path,
+            original_image_path=final_org_path,
+            extra_prompts=[LAST_VIEW_PROMPTS.get("right", "")],
+        )
+        return ok_left and ok_right
+
+    ok_views = validate_views()
+    print(f"[2차 검수 결과] {'PASS' if ok_views else 'FAIL'}")
+
+    if not ok_views:
+        print("[2차 검수] FAIL → 좌/우 이미지 한 번 재생성 시도")
+        make_one_image_to_three(
+            api_key=API_KEY,
+            model_name=STYLE_MODEL,
+            input_image_path=final_image_path,
+        )
+        ok_views = validate_views()
+        print(f"[2차 재검수 결과] {'PASS' if ok_views else 'FAIL'}")

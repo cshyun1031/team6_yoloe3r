@@ -17,11 +17,13 @@ from .config import (
     API_KEY,
     STYLE_MODEL,
     SELECTED_IMAGE_PATH,
+    REPORT_MODEL,
 )
 
 from .style.style_client import run_style_model
 from .style.style_prompt import generate_style_prompt
-from .main_1img23 import make_one_image_to_three   
+from .main_1img23 import make_one_image_to_three, LAST_VIEW_PROMPTS   
+from .for_retry import ensure_image_generated, check_prompt_compliance
 
 PARSED_REPORT_PATH = "parsed_report.json"
 STYLE_CHOICE_PATH = "modules/llm_final_api/style_choice.json"
@@ -109,11 +111,14 @@ def main_new_looks():
     # 모든 가구 선택
     target_objects = "모든 가구와 데코 요소"
 
-    try:
-        style_prompt = generate_style_prompt(
-            target_style=target_style,
-            target_objects=target_objects,
-        )
+    # 프롬프트 생성 
+    style_prompt = generate_style_prompt(
+        target_style=target_style,
+        target_objects=target_objects,
+    )
+
+    # 스타일 변경 이미지 생성 (재시도 지원)
+    def _generate_styled_image() -> str:
 
         image_bytes = run_style_model(
             api_key=API_KEY,
@@ -127,14 +132,57 @@ def main_new_looks():
             f.write(image_bytes)
 
         # 최종본은 항상 ORG_IMAGE_PATH 로 통일
-        styled_image_path = os.path.join('apioutput',ORG_IMAGE_PATH)
+        styled_image_path = os.path.join("apioutput", ORG_IMAGE_PATH)
         shutil.copyfile(temp_output, styled_image_path)
 
         print(f"스타일 변경 이미지 저장 완료: {styled_image_path}")
+        return styled_image_path
 
-    except Exception as e:
-        print(f"스타일 변경(3단계) 중 에러 발생: {e}")
-        return
+    styled_image_path = ensure_image_generated(
+        generate_fn=_generate_styled_image,
+        original_path=base_image_path,
+    )
+
+    if styled_image_path is None:
+        print(f"스타일 변경(3단계)중 에러가 발생하여 원본 사진으로 대체함.")
+        styled_image_path = base_image_path
+
+    # 1차 검수: 스타일 프롬프트대로 편집이 잘 되었는지 확인
+    print("\n 스타일 편집 결과 검수 시작 ---")
+
+    first_validation_prompt = f"""
+    이 이미지는 '{target_style}' 인테리어 스타일로 자연스럽게 변환되어야 합니다.
+    방의 구조는 유지하되, 색감/소재/일부 가구 등을 '{target_style}' 느낌으로 바뀌었는지 확인하세요.
+    """
+
+    ok_first = check_prompt_compliance(
+        api_key=API_KEY,
+        model_name=REPORT_MODEL,
+        user_prompt=first_validation_prompt,
+        edited_image_path=styled_image_path,
+        original_image_path=base_image_path,
+        extra_prompts=[style_prompt],
+    )
+    print(f"[1차 검수 결과] {'PASS' if ok_first else 'FAIL'}")
+
+    if not ok_first:
+        print("[1차 검수] FAIL → 스타일 이미지 한 번 재생성 시도")
+        styled_image_path = ensure_image_generated(
+            generate_fn=_generate_styled_image,
+            original_path=base_image_path,
+        )
+        if styled_image_path:
+            ok_first = check_prompt_compliance(
+                api_key=API_KEY,
+                model_name=REPORT_MODEL,
+                user_prompt=first_validation_prompt,
+                edited_image_path=styled_image_path,
+                original_image_path=base_image_path,
+                extra_prompts=[style_prompt],
+            )
+            print(f"[1차 재검수 결과] {'PASS' if ok_first else 'FAIL'}")
+        else:
+            print("[1차 재검수] 이미지 재생성 실패 → 원본 유지")
 
     # 4. 좌&우 각도 이미지 2장 생성
     print("\n 4단계: 좌/우 각도 이미지 생성 시작 ---")
@@ -150,3 +198,42 @@ def main_new_looks():
         print("   - img4new3r_right.png")
     except Exception as e:
         print(f"좌/우 각도 생성(4단계) 중 에러 발생: {e}")
+    
+    # 5. 최종 이미지 프롬프트 준수 검수
+    print("\n 최종 이미지 프롬프트 준수 검수 시작 ---")
+
+    org_path = styled_image_path
+    left_path = os.path.join("apioutput", "img4new3r_left.png")
+    right_path = os.path.join("apioutput", "img4new3r_right.png")
+
+    def validate_views():
+        ok_left = check_prompt_compliance(
+            api_key=API_KEY,
+            model_name=REPORT_MODEL,
+            user_prompt="카메라가 좌측으로 회전한 동일한 방이어야 합니다.",
+            edited_image_path=left_path,
+            original_image_path=org_path,
+            extra_prompts=[LAST_VIEW_PROMPTS.get("left", "")],
+        )
+        ok_right = check_prompt_compliance(
+            api_key=API_KEY,
+            model_name=REPORT_MODEL,
+            user_prompt="카메라가 우측으로 회전한 동일한 방이어야 합니다.",
+            edited_image_path=right_path,
+            original_image_path=org_path,
+            extra_prompts=[LAST_VIEW_PROMPTS.get("right", "")],
+        )
+        return ok_left and ok_right
+
+    ok_views = validate_views()
+    print(f"[2차 검수 결과] {'PASS' if ok_views else 'FAIL'}")
+
+    if not ok_views:
+        print("[2차 검수] FAIL → 좌/우 이미지 한 번 재생성 시도")
+        make_one_image_to_three(
+            api_key=API_KEY,
+            model_name=STYLE_MODEL,
+            input_image_path=styled_image_path,
+        )
+        ok_views = validate_views()
+        print(f"[2차 재검수 결과] {'PASS' if ok_views else 'FAIL'}")

@@ -5,6 +5,8 @@ from PIL import Image # 이미지 저장 및 처리
 import io # 바이트 스트림 처리 
 from .config import API_KEY, STYLE_MODEL
 
+LAST_VIEW_PROMPTS = {}
+
 def make_one_image_to_three(api_key: str, model_name: str, input_image_path: str):
     """
     앞선 과정에서 생성된 방 이미지를 입력받아,
@@ -108,6 +110,7 @@ def make_one_image_to_three(api_key: str, model_name: str, input_image_path: str
         # 현재 방향에 맞는 프롬프트 조립.
         # [공통규칙] + [현재 방향 지시] + [네거티브]를 결합하여 모델에 전달
         final_prompt = base_rules + "\n" + prompts_by_direction[direction] + "\n" + negative_prompt
+        LAST_VIEW_PROMPTS[direction] = final_prompt
 
         print(f"⏳ '{direction}' 측면 이미지 생성 중...")
 
