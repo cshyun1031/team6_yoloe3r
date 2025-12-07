@@ -87,14 +87,14 @@ def create_summary_report_file(parsed_data: Dict[str, Any], raw_report_text: str
 전체적인 분위기는 **{general_style}** 스타일입니다.
 
 1. 분위기 정의 및 유형별 확률
-### {mood1_word} ({mood1_percent}%), {mood2_word} ({mood2_percent}%), {mood3_word} ({mood3_percent}%)
+{mood1_word} ({mood1_percent}%), {mood2_word} ({mood2_percent}%), {mood3_word} ({mood3_percent}%)
 
-2. 가구 추가 / 제거 / 변경 추천
+** 2. 가구 추가 / 제거 / 변경 추천 **
 ### 가구 추가: **{add_item}** 
 ### 가구 제거: **{rem_item}** 
 ### 가구 변경: **{change_item} -> {rec_item}**
 
-3. 이런 스타일 어떠세요?
+** 3. 이런 스타일 어떠세요? **
 ### **{rec_style}**
 
 <details>
