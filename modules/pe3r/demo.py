@@ -70,9 +70,23 @@ def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, 
                       None if transparent_cams else imgs[i], focals[i],
                       imsize=imgs[i].shape[1::-1], screen_width=cam_size)
 
+    # [수정됨] 좌표계 변환 로직 (표준 방식 적용)
+    # 1. 첫 번째 카메라(Camera 0)를 원점(0,0,0)으로 이동
+    scene.apply_transform(np.linalg.inv(cams2world[0]))
+
+    # 2. X축을 기준으로 180도 회전
+    # Dust3R/OpenCV 좌표계(Y-Down)를 3D 뷰어 좌표계(Y-Up)로 변환하는 가장 표준적인 방법입니다.
     rot = np.eye(4)
-    rot[:3, :3] = Rotation.from_euler('y', np.deg2rad(180)).as_matrix()
-    scene.apply_transform(np.linalg.inv(cams2world[0] @ OPENGL @ rot))
+    rot[:3, :3] = Rotation.from_euler('x', 180, degrees=True).as_matrix()
+    scene.apply_transform(rot)
+
+    # 3. 모델을 원점에서 약간 뒤로 이동 (Z축 이동)
+    # 카메라가 모델 파묻히지 않고, 모델을 바라볼 수 있도록 모델을 Z축 방향으로 2.0만큼 밉니다.
+    # 뷰어 카메라는 보통 (0,0,0) 근처에 있으므로, 모델이 -Z 방향(앞)에 있어야 보입니다.
+    translate = np.eye(4)
+    translate[2, 3] = -2.0 
+    scene.apply_transform(translate)
+    
     outfile = os.path.join(outdir, 'scene.glb')
     if not silent:
         print('(exporting 3D scene to', outfile, ')')
@@ -225,7 +239,7 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
 
 
 def get_3D_object_from_scene(outdir, pe3r, silent, text, threshold, scene, min_conf_thr, as_pointcloud, 
-                 mask_sky, clean_depth, transparent_cams, cam_size):
+                             mask_sky, clean_depth, transparent_cams, cam_size):
     
     if not hasattr(scene, 'backup_imgs'):
         scene.backup_imgs = [img.copy() for img in scene.ori_imgs]
@@ -309,6 +323,10 @@ def highlight_selected_object(
     masked_images = []
     original_images = scene.backup_imgs
     
+    # 파란색 블렌딩 비율 (0.0 ~ 1.0)
+    # 0.5는 원본 50% + 파란색 50%로 적절한 하이라이트 효과를 줍니다.
+    alpha = 0.5 
+
     for i, img in enumerate(original_images):
         current_frame_masks = mask_list[i]
         target_mask = None
@@ -316,22 +334,36 @@ def highlight_selected_object(
             target_mask = current_frame_masks[target_obj_id]
         
         img_h, img_w = img.shape[:2]
-        processed_img = img.copy()
+        processed_img = img.copy() # 배경은 원본 그대로 유지
         
         if target_mask is not None:
+            # 마스크 크기가 안 맞으면 리사이즈
             if target_mask.shape[:2] != (img_h, img_w):
                 target_mask = cv2.resize(target_mask.astype(np.uint8), (img_w, img_h), interpolation=cv2.INTER_NEAREST).astype(bool)
             
+            # [수정됨] 선택된 객체(target_mask) 부분만 파란색 틴트 적용
+            # 배경(~target_mask)을 어둡게 하는 코드는 삭제됨
+            
             if processed_img.dtype == np.uint8:
-                processed_img[~target_mask] = 30
-            else:
-                processed_img[~target_mask] = 0.1
-        else:
-            if processed_img.dtype == np.uint8:
-                processed_img[:] = 30
-            else:
-                processed_img[:] = 0.1
+                # uint8 이미지 (0~255)
+                # RGB 기준 Blue: [0, 0, 255]
+                roi = processed_img[target_mask].astype(np.float32)
+                blue_layer = np.array([0, 0, 255], dtype=np.float32) # Blue
                 
+                # 원본과 파란색을 alpha 비율로 섞음 (Texture 유지)
+                blended = (roi * (1 - alpha)) + (blue_layer * alpha)
+                processed_img[target_mask] = blended.astype(np.uint8)
+                
+            else:
+                # float 이미지 (0.0~1.0)
+                # RGB 기준 Blue: [0.0, 0.0, 1.0]
+                roi = processed_img[target_mask]
+                blue_layer = np.array([0.0, 0.0, 1.0], dtype=processed_img.dtype)
+                
+                blended = (roi * (1 - alpha)) + (blue_layer * alpha)
+                processed_img[target_mask] = blended
+        
+        # target_mask가 없으면(해당 뷰에서 객체가 안 보이면) 그냥 원본 그대로 추가
         masked_images.append(processed_img)
 
     scene.ori_imgs = masked_images
@@ -373,12 +405,17 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
     model_from_scene_fun = functools.partial(get_3D_model_from_scene, tmpdirname, silent)
     get_3D_object_from_scene_fun = functools.partial(get_3D_object_from_scene, tmpdirname, pe3r, silent)
 
-    # [NEW] 초기 생성 시에만 위/아래 모델을 동시에 채워주는 래퍼 함수
+    # [수정됨] 모델 파일 생성 후 camera_position을 강제로 업데이트하지 않습니다.
+    # 뷰어가 파일 로드 시 자동으로 최적의 시점을 잡도록 둡니다.
     def initial_recon_wrapper(*args):
-        # 기존 recon_fun 실행
         scene_obj, model_path, gallery_imgs = recon_fun(*args)
-        # 중요: model_path를 두 번 리턴 (위쪽 모델용, 아래쪽 원본 모델용)
-        return scene_obj, model_path, model_path, gallery_imgs
+        
+        return (
+            scene_obj, 
+            model_path, # camera_position 제거, 단순 파일 경로만 리턴
+            model_path, 
+            gallery_imgs
+        )
 
     def save_style_json(selected_style):
         data = {"selected_style": selected_style}
@@ -493,6 +530,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         print("💾 [Backup] 분석 리포트 텍스트 백업 완료")
         return report_text
 
+    # [수정됨] 원본 복구 시에도 camera_position 강제 업데이트 삭제
     def restore_original_scene(orig_scene, orig_inputs, orig_report, min_conf_thr, as_pointcloud, mask_sky, clean_depth, transparent_cams, cam_size):
         if orig_scene is None:
             return gr.update(), gr.update(), gr.update(), "⚠️ 저장된 원본이 없습니다."
@@ -508,7 +546,13 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         restored_report = orig_report if orig_report else "🔄 원본 리포트가 없습니다."
 
         print("↩️ [Restore] 원본 Scene 및 리포트 되돌리기 완료")
-        return orig_scene, restored_model_path, orig_inputs, restored_report
+        
+        return (
+            orig_scene, 
+            restored_model_path, 
+            orig_inputs, 
+            restored_report
+        )
 
     def run_and_display(input_files):
         image_paths = []
@@ -535,8 +579,8 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         return gallery_data, mask_list, ordered_ids
     
     def on_gallery_select(scene, mask_data, id_list, 
-                                      conf, pc, sky, clean, trans, size, 
-                                      evt: gr.SelectData):
+                                          conf, pc, sky, clean, trans, size, 
+                                          evt: gr.SelectData):
                     return highlight_selected_object(
                         scene, mask_data, id_list, 
                         conf, pc, sky, clean, trans, size, 
@@ -554,12 +598,17 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         original_report_text = gr.State(None) 
         mask_data_state = gr.State([])
         object_id_list_state = gr.State([])
+        interior_styles = [
+            # ... (스타일 목록 생략) ...
+            "페미닌 Feminine Room Decor"
+        ]
 
         gr.Markdown("##🛋️ IF U Demo")
 
         with gr.Row():
             # --- 좌측 패널 (설정) ---
             with gr.Column(scale=1, min_width=320):
+                # ... (설정 컴포넌트 생략) ...
                 inputfiles = gr.File(file_count="multiple", label="Input Images")
                 
                 with gr.Accordion("⚙️ Settings", open=False):
@@ -589,25 +638,24 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                     change = gr.Checkbox(value=False, label="가구 변경 제안 반영해보기")
                     run_suggested_change_btn= gr.Button("결과 생성", variant="primary")
                 with gr.Accordion("방 분위기 바꿔보기", open=False, visible=False) as analysis_accordion1:
-                    style = gr.Dropdown(["AI 추천","미니멀리즘","맥시멀리즘"], label="style")
+                    style = gr.Dropdown(interior_styles, label="style")
                     run_style_change_btn = gr.Button("결과 생성", variant="primary")
 
             # --- 우측 패널 (3D 뷰어 2개 배치) ---
             with gr.Column(scale=5):
-                # [위쪽] 현재 상태 (변경됨) - 화면 높이의 45%
+                # [위쪽] 현재 상태 (변경됨)
                 outmodel = gr.Model3D(
                     label="Current Model (Modified Look)", 
                     interactive=True,
                     height="65vh",
-                    camera_position=(0.0, 0.0, 1.5)
+                    # camera_position을 제거하고 초기 뷰를 뷰어에게 맡깁니다.
                 )
                 
-                # [아래쪽] 원본 상태 (고정됨) - 화면 높이의 45%
+                # [아래쪽] 원본 상태 (고정됨)
                 orig_model_display = gr.Model3D(
                     label="Original Model (Reference)", 
                     interactive=True,
                     height="25vh",
-                    camera_position=(0.0, 0.0, 2.0)
                 )
                 
                 analysis_output = gr.Markdown(
@@ -636,23 +684,22 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         )
 
         result_gallery.select(
-                    fn=on_gallery_select,
-                    inputs=[
-                        scene,                
-                        mask_data_state,      
-                        object_id_list_state, 
-                        min_conf_thr,         
-                        as_pointcloud,        
-                        mask_sky,             
-                        clean_depth,          
-                        transparent_cams,     
-                        cam_size              
-                    ],
-                    outputs=outmodel
-                )
+                fn=on_gallery_select,
+                inputs=[
+                    scene,                 
+                    mask_data_state,       
+                    object_id_list_state, 
+                    min_conf_thr,          
+                    as_pointcloud,         
+                    mask_sky,              
+                    clean_depth,           
+                    transparent_cams,      
+                    cam_size               
+                ],
+                outputs=outmodel
+            )
 
-        # 1. [초기 생성] run_btn -> 위(outmodel)와 아래(orig_model_display) 둘 다 업데이트
-        #    이곳에서만 분석 리포트를 생성합니다.
+        # 1. [초기 생성]
         recon_event = run_btn.click(
             fn=initial_recon_wrapper, 
             inputs=[inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
@@ -686,11 +733,9 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         )
 
         # ---------------------------------------------------------------------
-        # [수정/스타일 변경 이벤트] -> 오직 outmodel(위쪽)만 업데이트
-        # **여기서는 분석 리포트 생성을 다시 하지 않습니다.**
+        # [수정/스타일 변경 이벤트]
         # ---------------------------------------------------------------------
         
-        # 스타일 변경
         suggestion_event = run_style_change_btn.click(
             fn=generate_and_load_new_images,
             inputs=None,
@@ -702,12 +747,9 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             inputs=[inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
                     mask_sky, clean_depth, transparent_cams, cam_size,
                     scenegraph_type, winsize, refid],
-            outputs=[scene, outmodel, outgallery] # orig_model_display 제외
+            outputs=[scene, outmodel, outgallery]
         )
 
-        # (분석 리포트 재실행 부분 삭제됨)
-
-        # 가구 변경
         modify_event = run_suggested_change_btn.click(
             fn=generate_and_load_modified_images,
             inputs=None,
@@ -719,13 +761,11 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             inputs=[inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
                     mask_sky, clean_depth, transparent_cams, cam_size,
                     scenegraph_type, winsize, refid],
-            outputs=[scene, outmodel, outgallery] # orig_model_display 제외
+            outputs=[scene, outmodel, outgallery]
         )
 
-        # (분석 리포트 재실행 부분 삭제됨)
-
         # ---------------------------------------------------------------------
-        # [되돌리기] -> outmodel을 원본과 같게 복구
+        # [되돌리기]
         # ---------------------------------------------------------------------
         revert_btn.click(
             fn=restore_original_scene,
