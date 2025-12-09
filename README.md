@@ -6,6 +6,7 @@
 ```bash
 conda create --name yoloe3r python=3.13
 conda activate yoloe3r
+```
 
 #### Install torch
 '''bash
