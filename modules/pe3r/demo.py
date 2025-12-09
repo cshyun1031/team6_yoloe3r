@@ -11,36 +11,37 @@ from scipy.spatial.transform import Rotation
 import requests
 from io import BytesIO
 import cv2
-from typing import Any, Dict, Generator, List
 import matplotlib.pyplot as pl
 import glob
 from copy import deepcopy
 import json
 
-# Custom Modules (사용자 환경에 맞게 유지)
+# Custom Modules
 from modules.pe3r.images import Images
 from modules.dust3r.inference import inference
 from modules.dust3r.image_pairs import make_pairs
 from modules.dust3r.utils.image import load_images, rgb
 from modules.dust3r.utils.device import to_numpy
-from modules.dust3r.viz import add_scene_cam, CAM_COLORS, OPENGL, pts3d_to_trimesh, cat_meshes
+from modules.dust3r.viz import add_scene_cam, CAM_COLORS, cat_meshes, pts3d_to_trimesh
 from modules.dust3r.cloud_opt import global_aligner, GlobalAlignerMode
-from modules.mobilesamv2.utils.transforms import ResizeLongestSide
 
 # User API Modules
 from modules.llm_final_api.main_report import main_report
 from modules.llm_final_api.main_new_looks import main_new_looks
 from modules.llm_final_api.main_modify_looks import main_modify_looks
 from modules.IR.listup import listup
-from modules.IR.track_crop import crop
 
 # -----------------------------------------------------------------------------
-# 1. Helper Functions (Visualization & Geometry)
+# 1. 시각화 및 지오메트리 헬퍼 함수
 # -----------------------------------------------------------------------------
 
 def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, cam_size=0.05,
                                  cam_color=None, as_pointcloud=False,
                                  transparent_cams=False, silent=False):
+    """
+    3D 포인트 클라우드와 카메라 정보를 Trimesh Scene으로 구성하고,
+    좌표계를 뷰어에 맞게 변환하여 GLB 파일로 저장하는 함수.
+    """
     assert len(pts3d) == len(mask) <= len(imgs) <= len(cams2world) == len(focals)
     pts3d = to_numpy(pts3d)
     imgs = to_numpy(imgs)
@@ -49,7 +50,7 @@ def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, 
 
     scene = trimesh.Scene()
 
-    # full pointcloud
+    # 포인트 클라우드 생성
     if as_pointcloud:
         pts = np.concatenate([p[m] for p, m in zip(pts3d, mask)])
         col = np.concatenate([p[m] for p, m in zip(imgs, mask)])
@@ -62,7 +63,7 @@ def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, 
         mesh = trimesh.Trimesh(**cat_meshes(meshes))
         scene.add_geometry(mesh)
 
-    # add each camera
+    # 카메라 시각화 추가
     for i, pose_c2w in enumerate(cams2world):
         if isinstance(cam_color, list):
             camera_edge_color = cam_color[i]
@@ -72,7 +73,7 @@ def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, 
                       None if transparent_cams else imgs[i], focals[i],
                       imsize=imgs[i].shape[1::-1], screen_width=cam_size)
 
-    # [수정됨] 3D 모델 시점을 카메라(Camera 0) 기준으로 변경
+    # 좌표계 변환: 첫 번째 카메라를 기준으로 정렬하고, Y-up 좌표계로 회전 및 Z축 이동
     scene.apply_transform(np.linalg.inv(cams2world[0]))
     rot = np.eye(4)
     rot[:3, :3] = Rotation.from_euler('x', 180, degrees=True).as_matrix()
@@ -90,6 +91,10 @@ def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, 
 
 def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud=False, mask_sky=False,
                             clean_depth=False, transparent_cams=False, cam_size=0.05):
+    """
+    재구성된 Scene 객체에서 데이터를 추출하고 전처리(하늘 마스킹, 깊이 정리 등)한 후
+    GLB 변환 함수를 호출하는 래퍼 함수.
+    """
     if scene is None:
         return None
     if clean_depth:
@@ -107,6 +112,10 @@ def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud
                                         transparent_cams=transparent_cams, cam_size=cam_size, silent=silent)
 
 def mask_nms(masks, threshold=0.8):
+    """
+    세그멘테이션 마스크 간의 중복을 제거하는 NMS(Non-Maximum Suppression) 함수.
+    작은 마스크가 큰 마스크에 일정 비율 이상 포함되면 제거함.
+    """
     keep = []
     mask_num = len(masks)
     suppressed = np.zeros((mask_num), dtype=np.int64)
@@ -123,12 +132,18 @@ def mask_nms(masks, threshold=0.8):
     return keep
 
 def filter(masks, keep):
+    """
+    NMS 결과 인덱스(keep)에 해당하는 마스크만 남기는 필터링 함수.
+    """
     ret = []
     for i, m in enumerate(masks):
         if i in keep: ret.append(m)
     return ret
 
 def mask_to_box(mask):
+    """
+    이진 마스크로부터 바운딩 박스(x_min, y_min, x_max, y_max) 좌표를 추출하는 함수.
+    """
     if mask.sum() == 0:
         return np.array([0, 0, 0, 0])
     
@@ -143,16 +158,22 @@ def mask_to_box(mask):
     return np.array([left, top, right, bottom])
 
 def box_xyxy_to_xywh(box_xyxy):
+    """
+    [x_min, y_min, x_max, y_max] 포맷의 박스를 [x, y, w, h] 포맷으로 변환하는 함수.
+    """
     box_xywh = deepcopy(box_xyxy)
     box_xywh[2] = box_xywh[2] - box_xywh[0]
     box_xywh[3] = box_xywh[3] - box_xywh[1]
     return box_xywh
 
 # -----------------------------------------------------------------------------
-# 2. Logic Replacement: YOLO Features & Segmentation
+# 2. YOLO 및 Feature 추출 로직
 # -----------------------------------------------------------------------------
 
 def get_class_embedding(class_id, feature_dim=1024):
+    """
+    클래스 ID를 시드(seed)로 사용하여 고정된 랜덤 임베딩 벡터를 생성하는 함수.
+    """
     generator = torch.Generator().manual_seed(int(class_id) + 100) 
     embedding = torch.randn(feature_dim, generator=generator)
     embedding = embedding / embedding.norm(dim=-1, keepdim=True)
@@ -160,6 +181,10 @@ def get_class_embedding(class_id, feature_dim=1024):
 
 @torch.no_grad
 def get_mask_and_class_from_yolo(seg_model, image_np, original_size, conf=0.25):
+    """
+    YOLO 모델을 사용하여 이미지에서 마스크와 클래스 ID를 추출하는 함수.
+    너무 작은 객체는 필터링하고, NMS를 적용하여 중복을 제거함.
+    """
     results = seg_model.predict(image_np, conf=conf, retina_masks=True, verbose=False)
     
     sam_mask = []
@@ -196,6 +221,10 @@ def get_mask_and_class_from_yolo(seg_model, image_np, original_size, conf=0.25):
 
 @torch.no_grad
 def get_cog_feats(images, pe3r):
+    """
+    YOLO와 SAM2를 결합하여 다시점 이미지에서 일관된 객체 마스크와 특징 벡터를 추출하는 핵심 로직.
+    첫 프레임 YOLO 탐지 -> SAM2 비디오 추적 -> 중간 프레임 YOLO 재탐지 및 병합 과정을 수행함.
+    """
     cog_seg_maps = []
     rev_cog_seg_maps = []
     
@@ -206,6 +235,7 @@ def get_cog_feats(images, pe3r):
     np_images = images.np_images
     np_images_size = images.np_images_size
     
+    # 첫 프레임 객체 탐지
     masks, class_ids = get_mask_and_class_from_yolo(pe3r.seg_model, np_images[0], np_images_size[0])
     
     for i, mask in enumerate(masks):
@@ -220,6 +250,7 @@ def get_cog_feats(images, pe3r):
 
     video_segments = {} 
     
+    # SAM2 비디오 전파 및 추가 객체 탐지
     for out_frame_idx, out_obj_ids, out_mask_logits in pe3r.sam2.propagate_in_video(inference_state):
         sam2_masks = (out_mask_logits > 0.0).squeeze(1)
 
@@ -249,6 +280,7 @@ def get_cog_feats(images, pe3r):
                 obj_id_to_class_id[mask_num] = yolo_class_ids[i]
                 mask_num += 1
 
+    # Feature Vector 생성
     multi_view_clip_feats = torch.zeros((mask_num + 1, 1024))
     
     for obj_id in range(mask_num):
@@ -260,6 +292,7 @@ def get_cog_feats(images, pe3r):
             
     multi_view_clip_feats[mask_num] = torch.zeros(1024)
 
+    # 세그멘테이션 맵 생성
     for now_frame in range(len(video_segments)):
         image = np_images[now_frame]
         rev_seg_map = -np.ones(image.shape[:2], dtype=np.int64)
@@ -284,12 +317,16 @@ def get_cog_feats(images, pe3r):
 
 
 # -----------------------------------------------------------------------------
-# 3. Core Reconstruction Functions
+# 3. 핵심 3D 재구성 함수
 # -----------------------------------------------------------------------------
 
 def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, niter, min_conf_thr,
                             as_pointcloud, mask_sky, clean_depth, transparent_cams, cam_size,
                             scenegraph_type, winsize, refid):
+    """
+    전체 3D 재구성 파이프라인을 실행하는 함수.
+    1. 이미지 로드 -> 2. 특징 추출 -> 3. Dust3r 추론 -> 4. 글로벌 정렬 -> 5. 결과 반환
+    """
     if len(filelist) < 2:
         raise gr.Error("Please input at least 2 images.")
 
@@ -317,6 +354,7 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
     elif scenegraph_type == "oneref":
         scenegraph_type = scenegraph_type + "-" + str(refid)
 
+    # 1차 추론 및 정렬
     pairs = make_pairs(imgs, scene_graph=scenegraph_type, prefilter=None, symmetrize=True)
     output = inference(pairs, pe3r.mast3r, device, batch_size=1, verbose=not silent)
     mode = GlobalAlignerMode.PointCloudOptimizer if len(imgs) > 2 else GlobalAlignerMode.PairViewer
@@ -325,6 +363,7 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
     lr = 0.01
     loss = scene_1.compute_global_alignment(tune_flg=True, init='mst', niter=niter, schedule=schedule, lr=lr)
 
+    # 2차 정련(Refinement)
     try:
         import torchvision.transforms as tvf
         ImgNorm = tvf.Compose([tvf.ToTensor(), tvf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
@@ -343,7 +382,7 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
         scene.ori_imgs = ori_imgs
         print(f"Refinement failed, using initial scene: {e}")
 
-
+    # 결과 생성
     outfile = get_3D_model_from_scene(outdir, silent, scene, min_conf_thr, as_pointcloud, mask_sky,
                                       clean_depth, transparent_cams, cam_size)
 
@@ -367,6 +406,10 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
 
 def get_3D_object_from_scene(outdir, pe3r, silent, text, threshold, scene, min_conf_thr, as_pointcloud, 
                              mask_sky, clean_depth, transparent_cams, cam_size):
+    """
+    (Legacy) 텍스트 프롬프트를 사용하여 YOLO-World로 특정 객체를 검색하고, 
+    해당 객체 외 영역을 어둡게 처리하여 3D 모델을 재생성하는 함수.
+    """
     if not hasattr(scene, 'backup_imgs'):
         scene.backup_imgs = [img.copy() for img in scene.ori_imgs]
 
@@ -425,6 +468,9 @@ def highlight_selected_object(
     evt: gr.SelectData,
     outdir=None 
 ): 
+    """
+    UI 갤러리에서 선택된 가구 객체를 파란색 틴트로 하이라이트하고 3D 모델을 업데이트하는 함수.
+    """
     if scene is None or not mask_list:
         print("⚠️ Scene or mask_list is empty.")
         return None
@@ -494,6 +540,9 @@ def highlight_selected_object(
 
 
 def set_scenegraph_options(inputfiles, winsize, refid, scenegraph_type):
+    """
+    Gradio UI에서 Scene Graph 설정(Swin/Oneref)에 따라 슬라이더 가시성을 조정하는 함수.
+    """
     num_files = len(inputfiles) if inputfiles is not None else 1
     max_winsize = max(1, math.ceil((num_files - 1) / 2))
     
@@ -506,20 +555,19 @@ def set_scenegraph_options(inputfiles, winsize, refid, scenegraph_type):
 
 
 # -----------------------------------------------------------------------------
-# 4. Main Demo UI
+# 4. Main Demo UI (Gradio 인터페이스)
 # -----------------------------------------------------------------------------
 
 def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
     
-    # Partial Functions
+    # Partial Functions 설정
     recon_fun = functools.partial(get_reconstructed_scene, tmpdirname, pe3r, device, silent)
     model_from_scene_fun = functools.partial(get_3D_model_from_scene, tmpdirname, silent)
     get_3D_object_from_scene_fun = functools.partial(get_3D_object_from_scene, tmpdirname, pe3r, silent)
 
-    # [추가됨] 초기 생성 시 상단/하단 모델 모두에 결과를 뿌리기 위한 Wrapper
+    # 초기 생성 시 3D 모델(상단 변형본, 하단 원본)과 갤러리를 동시에 업데이트하기 위한 래퍼 함수
     def initial_recon_wrapper(*args):
         scene_obj, model_path, gallery_imgs = recon_fun(*args)
-        
         return (
             scene_obj, 
             model_path, # 상단 모델(outmodel)용 경로
@@ -527,7 +575,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             gallery_imgs
         )
 
-    # JSON Savers
+    # 스타일 선택 저장 함수
     def save_style_json(selected_style):
         data = {"selected_style": selected_style}
         try:
@@ -537,6 +585,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         except Exception as e:
             print(f"❌ [Error] 스타일 저장 실패: {e}")
 
+    # 유저 선택(추가/삭제/변경) 저장 함수
     def save_user_choice_json(use_add, use_remove, use_change):
         data = {
             "use_add": use_add,
@@ -550,7 +599,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         except Exception as e:
             print(f"❌ [Error] 유저 선택 저장 실패: {e}")
 
-    # Analysis & UI Updaters
+    # 리포트 파일 읽기 함수
     def read_report_file(filename="report_analysis_result.txt"):
         if os.path.exists(filename):
             try:
@@ -560,6 +609,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                 return f"파일 읽기 오류: {str(e)}"
         return "⚠️ 분석 결과 파일이 생성되지 않았습니다."
 
+    # 분석 실행 및 UI 업데이트 함수
     def run_analysis_and_show_ui(input_files):
         image_paths = []
         if input_files:
@@ -573,13 +623,15 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                 main_report(image_paths) 
             except Exception as e:
                 print(f"❌ [Error] 분석 모듈 실행 실패: {e}")
-                return f"### 분석 오류 발생\n{str(e)}", gr.update(visible=False), gr.update(visible=False)
+                return f"### 분석 오류 발생\n{str(e)}", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
         else:
-            return "### 분석 모듈 로드 실패", gr.update(visible=False), gr.update(visible=False)
+            return "### 분석 모듈 로드 실패", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
 
         report_text = read_report_file("report_analysis_result.txt")
+        # 4개의 output 반환 (리포트, 아코디언1, 아코디언2, 버튼 활성화)
         return report_text, gr.update(visible=True, open=True), gr.update(visible=True, open=True), gr.update(visible=True)
     
+    # 생성된 이미지 로드 헬퍼 함수
     def load_generated_images(module_func, module_name):
         if module_func:
             try:
@@ -607,7 +659,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
     def generate_and_load_modified_images():
         return load_generated_images(main_modify_looks, "main_modify_looks")
     
-    # Backup & Restore Logic
+    # 원본 Scene 백업 함수
     def backup_original_scene(scene, input_files):
         saved_paths = []
         if input_files:
@@ -617,10 +669,12 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         print(f"💾 [Backup] Scene과 파일 {len(saved_paths)}개가 원본으로 백업되었습니다.")
         return scene, saved_paths
     
+    # 원본 리포트 백업 함수
     def backup_original_report(report_text):
         print("💾 [Backup] 분석 리포트 텍스트 백업 완료")
         return report_text
 
+    # 원본 복구(Undo) 함수
     def restore_original_scene(orig_scene, orig_inputs, orig_report, min_conf_thr, as_pointcloud, mask_sky, clean_depth, transparent_cams, cam_size):
         if orig_scene is None:
             return gr.update(), gr.update(), gr.update(), "⚠️ 저장된 원본이 없습니다."
@@ -638,7 +692,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         print("↩️ [Restore] 원본 Scene 및 리포트 되돌리기 완료")
         return orig_scene, restored_model_path, orig_inputs, restored_report
 
-    # IR Gallery Logic
+    # IR(이미지 검색) 실행 및 갤러리 표시 함수
     def run_and_display(input_files):
         if not input_files: return [], [], []
         
@@ -652,55 +706,30 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             except: continue
         return gallery_data, mask_list, ordered_ids
     
+    # 갤러리 선택 이벤트 핸들러
     def on_gallery_select(scene, mask_data, id_list, conf, pc, sky, clean, trans, size, evt: gr.SelectData): 
         return highlight_selected_object(scene, mask_data, id_list, conf, pc, sky, clean, trans, size, evt, outdir=tmpdirname)
 
     # -------------------------------------------------------------------------
-    # Layout Definition
+    # UI 레이아웃 정의
     # -------------------------------------------------------------------------
 
     with gr.Blocks(title="IF U Demo", fill_width=True) as demo:
 
         interior_styles = [
-            "AI 추천",
-            "모던 Modern Interior",
-            "미니멀리즘 Minimalist Interior",
-            "스칸디나비아/북유럽 Scandinavian Home",
-            "인더스트리얼 Industrial Loft",
-            "클래식 Classic Interior Design",
-            "모던 클래식 Modern Classic Home",
-            "빈티지 Vintage Home Decor",
-            "레트로 Retro Style Interior",
-            "내추럴/젠 Natural Zen Interior",
-            "재팬디 Japandi Style",
-            "러스틱 Rustic Farmhouse",
-            "팜하우스 Modern Farmhouse",
-            "셰비 시크 Shabby Chic Style",
-            "아르데코 Art Deco Design",
-            "미드 센추리 모던 Mid-Century Modern Home",
-            "보헤미안/보호 Boho Chic Interior",
-            "트로피컬 Tropical Home Decor",
-            "지중해/스페인 Mediterranean Home",
-            "프렌치 French Country Style",
-            "컨템포러리 Contemporary Style",
-            "스팀펑크 Steampunk Decor",
-            "고딕 Gothic Interior",
-            "하이테크 Hi-Tech Interior",
-            "그리스 리바이벌 Greek Revival Interior",
-            "아르누보 Art Nouveau Interior",
-            "코스탈/해안 Coastal Home Decor",
-            "스위스 샬레 Swiss Chalet Interior",
-            "이집트 Egyptian Home Decor",
-            "젠 아시아 Asian Zen Decor",
-            "맥시멀리즘 Maximalist Decor",
-            "키치 Kitsch Decor Style",
-            "바이오필릭 Biophilic Design Home",
-            "컬러 블록 Color Block Interior",
-            "모노크로매틱 Monochromatic Room",
-            "팝 아트 Pop Art Interior",
-            "그랜디시 Grandmillennial Style",
-            "매시큘린 Masculine Interior Design",
-            "페미닌 Feminine Room Decor"
+            "AI 추천", "모던 Modern Interior", "미니멀리즘 Minimalist Interior", "스칸디나비아/북유럽 Scandinavian Home",
+            "인더스트리얼 Industrial Loft", "클래식 Classic Interior Design", "모던 클래식 Modern Classic Home",
+            "빈티지 Vintage Home Decor", "레트로 Retro Style Interior", "내추럴/젠 Natural Zen Interior",
+            "재팬디 Japandi Style", "러스틱 Rustic Farmhouse", "팜하우스 Modern Farmhouse",
+            "셰비 시크 Shabby Chic Style", "아르데코 Art Deco Design", "미드 센추리 모던 Mid-Century Modern Home",
+            "보헤미안/보호 Boho Chic Interior", "트로피컬 Tropical Home Decor", "지중해/스페인 Mediterranean Home",
+            "프렌치 French Country Style", "컨템포러리 Contemporary Style", "스팀펑크 Steampunk Decor",
+            "고딕 Gothic Interior", "하이테크 Hi-Tech Interior", "그리스 리바이벌 Greek Revival Interior",
+            "아르누보 Art Nouveau Interior", "코스탈/해안 Coastal Home Decor", "스위스 샬레 Swiss Chalet Interior",
+            "이집트 Egyptian Home Decor", "젠 아시아 Asian Zen Decor", "맥시멀리즘 Maximalist Decor",
+            "키치 Kitsch Decor Style", "바이오필릭 Biophilic Design Home", "컬러 블록 Color Block Interior",
+            "모노크로매틱 Monochromatic Room", "팝 아트 Pop Art Interior", "그랜디시 Grandmillennial Style",
+            "매시큘린 Masculine Interior Design", "페미닌 Feminine Room Decor"
         ]
         
         # State Variables
@@ -714,7 +743,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         gr.Markdown("## 🧊 IF U Demo")
 
         with gr.Row():
-            # --- Left Panel ---
+            # --- 좌측 패널 (입력 및 설정) ---
             with gr.Column(scale=1, min_width=320):
                 inputfiles = gr.File(file_count="multiple", label="Input Images")
                 
@@ -744,23 +773,21 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                     change = gr.Checkbox(value=False, label="가구 변경 제안 반영해보기")
                     run_suggested_change_btn= gr.Button("결과 생성", variant="primary")
                 with gr.Accordion("방 분위기 바꿔보기", open=True, visible=False) as analysis_accordion1:
-                    style = gr.Dropdown(interior_styles, value ="AI추천" , label="style", interactive=True)
+                    style = gr.Dropdown(interior_styles, value ="AI 추천" , label="style", interactive=True)
                     run_style_change_btn = gr.Button("결과 생성", variant="primary")
 
-
-                
-                # Hidden Find Button (integrated logic)
+                # (Legacy) 숨겨진 텍스트 검색 UI
                 with gr.Row(visible=False):
                     text_input = gr.Textbox(label="Query Text")
                     threshold = gr.Slider(label="Threshold", value=0.85)
                     find_btn = gr.Button("Find")
 
-            # --- Right Panel ---
+            # --- 우측 패널 (3D 뷰어 및 결과) ---
             with gr.Column(scale=2):
-                # [수정됨] 상단 뷰어 (65vh)
+                # 상단 뷰어 (현재 상태)
                 outmodel = gr.Model3D(label="3D Reconstruction Result", interactive=True, height="65vh")
                 
-                # [추가됨] 하단 뷰어 (25vh, 원본)
+                # 하단 뷰어 (원본 상태)
                 orig_model_display = gr.Model3D(
                     label="Original Model (Reference)", 
                     interactive=True,
@@ -789,11 +816,10 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                 )
 
         # ---------------------------------------------------------------------
-        # Event Wiring
+        # 이벤트 연결
         # ---------------------------------------------------------------------
         
-        # 1. 3D Reconstruction Flow
-        # [수정됨] initial_recon_wrapper 사용 및 output에 orig_model_display 추가
+        # 1. 3D 재구성 실행
         recon_event = run_btn.click(
             fn=initial_recon_wrapper,
             inputs=[inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
@@ -811,14 +837,14 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         ).then(
             fn=run_analysis_and_show_ui,
             inputs=[inputfiles],
-            outputs=[analysis_output, analysis_accordion, analysis_accordion1,IR_btn]
+            outputs=[analysis_output, analysis_accordion, analysis_accordion1, IR_btn]
         ).success(
             fn=backup_original_report,
             inputs=[analysis_output],
             outputs=[original_report_text]
         )
 
-        # 2. Revert Flow
+        # 2. 되돌리기 (Undo)
         revert_btn.click(
             fn=restore_original_scene,
             inputs=[original_scene, original_inputfiles, original_report_text, 
@@ -826,7 +852,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             outputs=[scene, outmodel, inputfiles, analysis_output]
         )
 
-        # 3. Style Change Flow
+        # 3. 스타일 변경 실행
         run_style_change_btn.click(
             fn=generate_and_load_new_images, inputs=None, outputs=inputfiles
         ).then(
@@ -843,7 +869,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             outputs=[analysis_output, analysis_accordion, analysis_accordion1, IR_btn]
         )
 
-        # 4. Modify Flow
+        # 4. 제안 적용 (가구 변경 등) 실행
         run_suggested_change_btn.click(
             fn=generate_and_load_modified_images, inputs=None, outputs=inputfiles
         ).then(
@@ -860,7 +886,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             outputs=[analysis_output, analysis_accordion, analysis_accordion1, IR_btn]
         )
 
-        # 5. IR Gallery Interaction
+        # 5. IR 갤러리 선택 인터랙션
         result_gallery.select(
             fn=on_gallery_select,
             inputs=[scene, mask_data_state, object_id_list_state, 
@@ -868,13 +894,13 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             outputs=outmodel
         )
 
-        # 6. Find Button (Legacy but kept functionality)
+        # 6. (Legacy) 텍스트 검색 버튼
         find_btn.click(fn=get_3D_object_from_scene_fun,
              inputs=[text_input, threshold, scene, min_conf_thr, as_pointcloud, mask_sky,
                      clean_depth, transparent_cams, cam_size],
              outputs=outmodel)
 
-        # 7. Other Settings
+        # 7. 기타 설정 변경 이벤트
         style.change(fn=save_style_json, inputs=[style], outputs=None)
         add.change(fn=save_user_choice_json, inputs=[add, delete, change], outputs=None)
         delete.change(fn=save_user_choice_json, inputs=[add, delete, change], outputs=None)
