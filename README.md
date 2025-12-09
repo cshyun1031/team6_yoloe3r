@@ -11,7 +11,7 @@ conda activate yoloe3r
 #### Install torch
 ```bash
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-(torch 2.9.1, cuda 12.6으로 개발)
+(torch 2.9.1, cuda 12.6 사용)
 ```
 
 #### Clone
