@@ -6,7 +6,6 @@ import torch
 import numpy as np
 import functools
 import trimesh
-import copy
 from PIL import Image
 from scipy.spatial.transform import Rotation
 import requests
@@ -15,9 +14,10 @@ import cv2
 from typing import Any, Dict, Generator, List
 import matplotlib.pyplot as pl
 import glob
+from copy import deepcopy
 import json
 
-# 모듈 경로가 사용자 환경에 맞게 설정되어 있다고 가정합니다.
+# Custom Modules (사용자 환경에 맞게 유지)
 from modules.pe3r.images import Images
 from modules.dust3r.inference import inference
 from modules.dust3r.image_pairs import make_pairs
@@ -25,16 +25,18 @@ from modules.dust3r.utils.image import load_images, rgb
 from modules.dust3r.utils.device import to_numpy
 from modules.dust3r.viz import add_scene_cam, CAM_COLORS, OPENGL, pts3d_to_trimesh, cat_meshes
 from modules.dust3r.cloud_opt import global_aligner, GlobalAlignerMode
-from copy import deepcopy
-
 from modules.mobilesamv2.utils.transforms import ResizeLongestSide
+
+# User API Modules
 from modules.llm_final_api.main_report import main_report
 from modules.llm_final_api.main_new_looks import main_new_looks
 from modules.llm_final_api.main_modify_looks import main_modify_looks
-
 from modules.IR.listup import listup
 from modules.IR.track_crop import crop
 
+# -----------------------------------------------------------------------------
+# 1. Helper Functions (Visualization & Geometry)
+# -----------------------------------------------------------------------------
 
 def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, cam_size=0.05,
                                  cam_color=None, as_pointcloud=False,
@@ -70,23 +72,15 @@ def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, 
                       None if transparent_cams else imgs[i], focals[i],
                       imsize=imgs[i].shape[1::-1], screen_width=cam_size)
 
-    # [수정됨] 좌표계 변환 로직 (표준 방식 적용)
-    # 1. 첫 번째 카메라(Camera 0)를 원점(0,0,0)으로 이동
+    # [수정됨] 3D 모델 시점을 카메라(Camera 0) 기준으로 변경
     scene.apply_transform(np.linalg.inv(cams2world[0]))
-
-    # 2. X축을 기준으로 180도 회전
-    # Dust3R/OpenCV 좌표계(Y-Down)를 3D 뷰어 좌표계(Y-Up)로 변환하는 가장 표준적인 방법입니다.
     rot = np.eye(4)
     rot[:3, :3] = Rotation.from_euler('x', 180, degrees=True).as_matrix()
     scene.apply_transform(rot)
-
-    # 3. 모델을 원점에서 약간 뒤로 이동 (Z축 이동)
-    # 카메라가 모델 파묻히지 않고, 모델을 바라볼 수 있도록 모델을 Z축 방향으로 2.0만큼 밉니다.
-    # 뷰어 카메라는 보통 (0,0,0) 근처에 있으므로, 모델이 -Z 방향(앞)에 있어야 보입니다.
     translate = np.eye(4)
     translate[2, 3] = -2.0 
     scene.apply_transform(translate)
-    
+
     outfile = os.path.join(outdir, 'scene.glb')
     if not silent:
         print('(exporting 3D scene to', outfile, ')')
@@ -96,40 +90,26 @@ def _convert_scene_output_to_glb(outdir, imgs, pts3d, mask, focals, cams2world, 
 
 def get_3D_model_from_scene(outdir, silent, scene, min_conf_thr=3, as_pointcloud=False, mask_sky=False,
                             clean_depth=False, transparent_cams=False, cam_size=0.05):
-    """
-    extract 3D_model (glb file) from a reconstructed scene
-    """
     if scene is None:
         return None
-    # post processes
     if clean_depth:
         scene = scene.clean_pointcloud()
     if mask_sky:
         scene = scene.mask_sky()
 
-    # get optimized values from scene
     rgbimg = scene.ori_imgs
     focals = scene.get_focals().cpu()
     cams2world = scene.get_im_poses().cpu()
-    # 3D pointcloud from depthmap, poses and intrinsics
     pts3d = to_numpy(scene.get_pts3d())
     scene.min_conf_thr = float(scene.conf_trf(torch.tensor(min_conf_thr)))
     msk = to_numpy(scene.get_masks())
     return _convert_scene_output_to_glb(outdir, rgbimg, pts3d, msk, focals, cams2world, as_pointcloud=as_pointcloud,
                                         transparent_cams=transparent_cams, cam_size=cam_size, silent=silent)
 
-def mask_nms(masks, threshold=0.5):
-    """
-    수정됨: 
-    threshold를 기본 0.8에서 0.5로 낮추어 중복 제거를 더 공격적으로 수행합니다.
-    큰 마스크(A)와 작은 마스크(B)가 겹칠 때, 작은 마스크의 50% 이상이 
-    큰 마스크와 겹치면 작은 마스크를 제거합니다.
-    """
+def mask_nms(masks, threshold=0.8):
     keep = []
     mask_num = len(masks)
     suppressed = np.zeros((mask_num), dtype=np.int64)
-    
-    # masks는 이미 면적 순으로 내림차순 정렬되어 들어온다고 가정 (get_mask_from_yolo_seg에서 처리)
     for i in range(mask_num):
         if suppressed[i] == 1:
             continue
@@ -137,16 +117,8 @@ def mask_nms(masks, threshold=0.5):
         for j in range(i + 1, mask_num):
             if suppressed[j] == 1:
                 continue
-            
             intersection = (masks[i] & masks[j]).sum()
-            
-            # i가 j보다 큼 (면적 기준). 
-            # 따라서 intersection / masks[j].sum()은 "작은 물체가 큰 물체에 얼마나 포함되었는가"를 의미
-            # 이 값이 threshold(0.5)보다 크면 작은 물체(j)를 삭제.
-            # 즉, 큰 가구 안에 포함된 작은 파츠(쿠션 등)를 제거함.
-            overlap_ratio = intersection / masks[j].sum()
-            
-            if overlap_ratio > threshold:
+            if min(intersection / masks[i].sum(), intersection / masks[j].sum()) > threshold:
                 suppressed[j] = 1
     return keep
 
@@ -156,51 +128,164 @@ def filter(masks, keep):
         if i in keep: ret.append(m)
     return ret
 
-def get_mask_from_yolo_seg(seg_model, image_np, conf=0.45):
-    """
-    수정됨:
-    1. conf: 0.25 -> 0.45로 상향 조정 (더 확실한 객체만 탐지)
-    2. mask_nms 호출 시 threshold=0.5 적용 (포함 관계 정리 강화)
-    """
-    # conf를 높여서 낮은 신뢰도의 객체(노이즈) 필터링
-    results = seg_model.predict(image_np, conf=conf, retina_masks=True, verbose=False)
-    sam_mask = []
+def mask_to_box(mask):
+    if mask.sum() == 0:
+        return np.array([0, 0, 0, 0])
     
+    rows = np.any(mask, axis=1)
+    cols = np.any(mask, axis=0)
+    
+    top = np.argmax(rows)
+    bottom = len(rows) - 1 - np.argmax(np.flip(rows))
+    left = np.argmax(cols)
+    right = len(cols) - 1 - np.argmax(np.flip(cols))
+    
+    return np.array([left, top, right, bottom])
+
+def box_xyxy_to_xywh(box_xyxy):
+    box_xywh = deepcopy(box_xyxy)
+    box_xywh[2] = box_xywh[2] - box_xywh[0]
+    box_xywh[3] = box_xywh[3] - box_xywh[1]
+    return box_xywh
+
+# -----------------------------------------------------------------------------
+# 2. Logic Replacement: YOLO Features & Segmentation
+# -----------------------------------------------------------------------------
+
+def get_class_embedding(class_id, feature_dim=1024):
+    generator = torch.Generator().manual_seed(int(class_id) + 100) 
+    embedding = torch.randn(feature_dim, generator=generator)
+    embedding = embedding / embedding.norm(dim=-1, keepdim=True)
+    return embedding
+
+@torch.no_grad
+def get_mask_and_class_from_yolo(seg_model, image_np, original_size, conf=0.25):
+    results = seg_model.predict(image_np, conf=conf, retina_masks=True, verbose=False)
+    
+    sam_mask = []
+    class_ids = []
+    img_area = original_size[0] * original_size[1]
+
     if results[0].masks is not None:
         masks_data = results[0].masks.data
-        img_area = image_np.shape[0] * image_np.shape[1]
+        cls_data = results[0].boxes.cls
         
-        for mask in masks_data:
+        for i, mask in enumerate(masks_data):
             bin_mask = mask > 0.5
-            # 너무 작은 객체 (화면의 0.2% 미만) 무시
-            if bin_mask.sum() / img_area > 0.002: 
+            if bin_mask.sum() / img_area > 0.002:
                 sam_mask.append(bin_mask)
+                class_ids.append(int(cls_data[i].item()))
 
     if len(sam_mask) == 0:
-        return []
-        
+        return [], []
+
     sam_mask = torch.stack(sam_mask)
-    # 크기가 큰 순서대로 정렬 (중요: NMS가 큰 것을 남기도록 하기 위함)
-    sorted_sam_mask = sorted(sam_mask, key=(lambda x: x.sum()), reverse=True)
+    class_ids = torch.tensor(class_ids)
+
+    sorted_idx = torch.argsort(sam_mask.sum(dim=(1, 2)), descending=True)
+    sorted_sam_mask = sam_mask[sorted_idx]
+    sorted_class_ids = class_ids[sorted_idx]
     
-    # 겹침/포함 관계 정리 (임계값 0.5)
-    keep = mask_nms(sorted_sam_mask, threshold=0.5)
+    keep = mask_nms(sorted_sam_mask)
+    
     ret_mask = filter(sorted_sam_mask, keep)
-    
-    return ret_mask
+    ret_class_ids = [sorted_class_ids[i].item() for i in keep]
+
+    return ret_mask, ret_class_ids
+
 
 @torch.no_grad
 def get_cog_feats(images, pe3r):
-    np_images = images.np_images
     cog_seg_maps = []
     rev_cog_seg_maps = []
-    for i in range(len(np_images)):
-        h, w = np_images[i].shape[:2]
-        dummy_map = -np.ones((h, w), dtype=np.int64)
-        cog_seg_maps.append(dummy_map)
-        rev_cog_seg_maps.append(dummy_map)
-    multi_view_clip_feats = torch.zeros((1, 1024))
+    
+    inference_state = pe3r.sam2.init_state(images=images.sam2_images, video_height=images.sam2_video_size[0], video_width=images.sam2_video_size[1])
+    mask_num = 0
+    obj_id_to_class_id = {} 
+
+    np_images = images.np_images
+    np_images_size = images.np_images_size
+    
+    masks, class_ids = get_mask_and_class_from_yolo(pe3r.seg_model, np_images[0], np_images_size[0])
+    
+    for i, mask in enumerate(masks):
+        _, _, _ = pe3r.sam2.add_new_mask(
+            inference_state=inference_state,
+            frame_idx=0,
+            obj_id=mask_num,
+            mask=mask,
+        )
+        obj_id_to_class_id[mask_num] = class_ids[i]
+        mask_num += 1
+
+    video_segments = {} 
+    
+    for out_frame_idx, out_obj_ids, out_mask_logits in pe3r.sam2.propagate_in_video(inference_state):
+        sam2_masks = (out_mask_logits > 0.0).squeeze(1)
+
+        video_segments[out_frame_idx] = {
+            out_obj_id: sam2_masks[i].cpu().numpy()
+            for i, out_obj_id in enumerate(out_obj_ids)
+        }
+
+        if out_frame_idx == 0:
+            continue
+
+        yolo_masks, yolo_class_ids = get_mask_and_class_from_yolo(pe3r.seg_model, np_images[out_frame_idx], np_images_size[out_frame_idx])
+
+        for i, yolo_mask in enumerate(yolo_masks):
+            flg = 1
+            for sam2_mask in sam2_masks:
+                area1 = yolo_mask.sum()
+                area2 = sam2_mask.sum()
+                intersection = (yolo_mask & sam2_mask).sum()
+                
+                if min(intersection / area1, intersection / area2) > 0.25:
+                    flg = 0
+                    break
+            
+            if flg:
+                video_segments[out_frame_idx][mask_num] = yolo_mask.cpu().numpy()
+                obj_id_to_class_id[mask_num] = yolo_class_ids[i]
+                mask_num += 1
+
+    multi_view_clip_feats = torch.zeros((mask_num + 1, 1024))
+    
+    for obj_id in range(mask_num):
+        if obj_id in obj_id_to_class_id:
+            cls_id = obj_id_to_class_id[obj_id]
+            multi_view_clip_feats[obj_id] = get_class_embedding(cls_id)
+        else:
+            multi_view_clip_feats[obj_id] = torch.zeros(1024)
+            
+    multi_view_clip_feats[mask_num] = torch.zeros(1024)
+
+    for now_frame in range(len(video_segments)):
+        image = np_images[now_frame]
+        rev_seg_map = -np.ones(image.shape[:2], dtype=np.int64)
+        sorted_dict_items = sorted(video_segments[now_frame].items(), key=lambda x: np.count_nonzero(x[1]), reverse=False)
+        for out_obj_id, mask in sorted_dict_items:
+            if mask.sum() == 0: continue
+            rev_seg_map[mask] = out_obj_id
+        rev_cog_seg_maps.append(rev_seg_map)
+
+        seg_map = -np.ones(image.shape[:2], dtype=np.int64)
+        sorted_dict_items_rev = sorted(video_segments[now_frame].items(), key=lambda x: np.count_nonzero(x[1]), reverse=True)
+        for out_obj_id, mask in sorted_dict_items_rev:
+            if mask.sum() == 0: continue
+            box = np.int32(box_xyxy_to_xywh(mask_to_box(mask)))
+            if box[2] == 0 and box[3] == 0: continue
+            
+            seg_map[mask] = out_obj_id
+            
+        cog_seg_maps.append(seg_map)
+
     return cog_seg_maps, rev_cog_seg_maps, multi_view_clip_feats
+
+
+# -----------------------------------------------------------------------------
+# 3. Core Reconstruction Functions
+# -----------------------------------------------------------------------------
 
 def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, niter, min_conf_thr,
                             as_pointcloud, mask_sky, clean_depth, transparent_cams, cam_size,
@@ -210,8 +295,18 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
 
     images = Images(filelist=filelist, device=device)
     
-    cog_seg_maps, rev_cog_seg_maps, cog_feats = get_cog_feats(images, pe3r)
-    imgs = load_images(images, rev_cog_seg_maps, size=512, verbose=not silent)
+    try:
+        cog_seg_maps, rev_cog_seg_maps, cog_feats = get_cog_feats(images, pe3r)
+        imgs = load_images(images, rev_cog_seg_maps, size=512, verbose=not silent)
+    except Exception as e:
+        print(f"Error in feature extraction: {e}")
+        rev_cog_seg_maps = []
+        for tmp_img in images.np_images:
+            rev_seg_map = -np.ones(tmp_img.shape[:2], dtype=np.int64)
+            rev_cog_seg_maps.append(rev_seg_map)
+        cog_seg_maps = rev_cog_seg_maps
+        cog_feats = torch.zeros((1, 1024))
+        imgs = load_images(images, rev_cog_seg_maps, size=512, verbose=not silent)
 
     if len(imgs) == 1:
         imgs = [imgs[0], copy.deepcopy(imgs[0])]
@@ -225,6 +320,7 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
     pairs = make_pairs(imgs, scene_graph=scenegraph_type, prefilter=None, symmetrize=True)
     output = inference(pairs, pe3r.mast3r, device, batch_size=1, verbose=not silent)
     mode = GlobalAlignerMode.PointCloudOptimizer if len(imgs) > 2 else GlobalAlignerMode.PairViewer
+    
     scene_1 = global_aligner(output, cog_seg_maps, rev_cog_seg_maps, cog_feats, device=device, mode=mode, verbose=not silent)
     lr = 0.01
     loss = scene_1.compute_global_alignment(tune_flg=True, init='mst', niter=niter, schedule=schedule, lr=lr)
@@ -245,7 +341,8 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
         scene = scene_1
         scene.imgs = ori_imgs
         scene.ori_imgs = ori_imgs
-        print(e)
+        print(f"Refinement failed, using initial scene: {e}")
+
 
     outfile = get_3D_model_from_scene(outdir, silent, scene, min_conf_thr, as_pointcloud, mask_sky,
                                       clean_depth, transparent_cams, cam_size)
@@ -254,9 +351,9 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
     depths = to_numpy(scene.get_depthmaps())
     confs = to_numpy([c for c in scene.im_conf])
     cmap = pl.get_cmap('jet')
-    depths_max = max([d.max() for d in depths])
+    depths_max = max([d.max() for d in depths]) if depths else 1
     depths = [d / depths_max for d in depths]
-    confs_max = max([d.max() for d in confs])
+    confs_max = max([d.max() for d in confs]) if confs else 1
     confs = [cmap(d / confs_max) for d in confs]
 
     imgs = []
@@ -270,15 +367,14 @@ def get_reconstructed_scene(outdir, pe3r, device, silent, filelist, schedule, ni
 
 def get_3D_object_from_scene(outdir, pe3r, silent, text, threshold, scene, min_conf_thr, as_pointcloud, 
                              mask_sky, clean_depth, transparent_cams, cam_size):
-    
     if not hasattr(scene, 'backup_imgs'):
         scene.backup_imgs = [img.copy() for img in scene.ori_imgs]
-        print("DEBUG: Original images backed up.")
 
     print(f"Searching for: '{text}' using YOLO-World...")
 
     search_classes = [text] 
-    pe3r.seg_model.set_classes(search_classes)
+    if hasattr(pe3r.seg_model, 'set_classes'):
+        pe3r.seg_model.set_classes(search_classes)
 
     original_images = scene.backup_imgs 
     masked_images = []
@@ -291,9 +387,7 @@ def get_3D_object_from_scene(outdir, pe3r, silent, text, threshold, scene, min_c
             else:
                 img_input = img_input.astype(np.uint8)
 
-        # [수정됨] conf_thr: 0.05 -> 0.3으로 상향
-        # 너무 낮은 확신도의 객체는 잡지 않도록 하여 파편화 및 오탐지 방지
-        conf_thr = 0.3 
+        conf_thr = 0.05 
         
         results = pe3r.seg_model.predict(img_input, conf=conf_thr, retina_masks=True, verbose=False)
         
@@ -302,31 +396,10 @@ def get_3D_object_from_scene(outdir, pe3r, silent, text, threshold, scene, min_c
 
         if results[0].masks is not None:
             masks = results[0].masks.data.cpu().numpy()
-            
-            # [추가] 텍스트 검색 결과에서도 NMS 적용
-            # YOLO가 자체적으로 NMS를 수행하지만, 마스크 레벨에서 
-            # 가장 큰 덩어리 하나만 확실하게 잡기 위해 추가 필터링 수행
-            valid_masks = []
             for mask in masks:
                 if mask.shape != combined_mask.shape:
                     mask = cv2.resize(mask, (combined_mask.shape[1], combined_mask.shape[0]))
-                bin_mask = mask > 0.5
-                valid_masks.append(bin_mask)
-            
-            if valid_masks:
-                # 크기순 정렬
-                valid_masks.sort(key=lambda x: x.sum(), reverse=True)
-                # 가장 큰 마스크 하나만 선택 (가구 파편화 방지를 위한 가장 강력한 방법)
-                # 만약 '의자'를 찾는데 의자가 여러 개일 수 있다면 아래 로직 대신 mask_nms 사용
-                # 여기서는 "한 가구를 감싸는 가장 큰 박스" 요청에 따라 가장 큰 놈을 우선합니다.
-                
-                # 여러 개의 의자를 다 찾아야 한다면:
-                # keep = mask_nms(valid_masks, threshold=0.5)
-                # for k in keep: combined_mask = np.logical_or(combined_mask, valid_masks[k])
-                
-                # 만약 '가장 큰 하나'만 남겨야 한다면:
-                combined_mask = valid_masks[0]
-                
+                combined_mask = np.logical_or(combined_mask, mask > 0.5)
                 found = True
         
         if found:
@@ -342,16 +415,15 @@ def get_3D_object_from_scene(outdir, pe3r, silent, text, threshold, scene, min_c
     scene.ori_imgs = masked_images
     scene.imgs = masked_images 
 
-    outfile = get_3D_model_from_scene(outdir, silent, scene, min_conf_thr, as_pointcloud, mask_sky, 
+    outfile = get_3D_model_from_scene(outdir, silent, scene, min_conf_thr, as_pointcloud, mask_sky,
                                       clean_depth, transparent_cams, cam_size)
-    
     return outfile
 
 def highlight_selected_object(
     scene, mask_list, object_id_list,
     min_conf_thr, as_pointcloud, mask_sky, clean_depth, transparent_cams, cam_size,
     evt: gr.SelectData,
-    outdir=None
+    outdir=None 
 ): 
     if scene is None or not mask_list:
         print("⚠️ Scene or mask_list is empty.")
@@ -377,41 +449,35 @@ def highlight_selected_object(
     masked_images = []
     original_images = scene.backup_imgs
     
-    # 파란색 틴트 강도 (0.0 ~ 1.0)
     alpha = 0.5 
 
     for i, img in enumerate(original_images):
         current_frame_masks = mask_list[i]
+        
         target_mask = None
         if target_obj_id in current_frame_masks:
             target_mask = current_frame_masks[target_obj_id]
         
         img_h, img_w = img.shape[:2]
-        processed_img = img.copy() # 배경은 원본 그대로 유지
+        processed_img = img.copy()
         
         if target_mask is not None:
-            # 마스크 크기 조정
             if target_mask.shape[:2] != (img_h, img_w):
                 target_mask = cv2.resize(target_mask.astype(np.uint8), (img_w, img_h), interpolation=cv2.INTER_NEAREST).astype(bool)
             
-            # 파란색 틴트 적용 (배경은 건드리지 않음)
             if processed_img.dtype == np.uint8:
-                # RGB Blue: [0, 0, 255]
                 roi = processed_img[target_mask].astype(np.float32)
                 blue_layer = np.array([0, 0, 255], dtype=np.float32) 
                 
                 blended = (roi * (1 - alpha)) + (blue_layer * alpha)
                 processed_img[target_mask] = blended.astype(np.uint8)
-                
             else:
-                # RGB Blue: [0.0, 0.0, 1.0]
                 roi = processed_img[target_mask]
                 blue_layer = np.array([0.0, 0.0, 1.0], dtype=processed_img.dtype)
                 
                 blended = (roi * (1 - alpha)) + (blue_layer * alpha)
                 processed_img[target_mask] = blended
         
-        # 가구가 안 보이는 뷰는 원본 이미지 그대로 추가
         masked_images.append(processed_img)
 
     scene.ori_imgs = masked_images
@@ -426,45 +492,42 @@ def highlight_selected_object(
     
     return outfile
 
+
 def set_scenegraph_options(inputfiles, winsize, refid, scenegraph_type):
     num_files = len(inputfiles) if inputfiles is not None else 1
     max_winsize = max(1, math.ceil((num_files - 1) / 2))
+    
     if scenegraph_type == "swin":
-        winsize = gr.Slider(label="Scene Graph: Window Size", value=max_winsize,
-                                minimum=1, maximum=max_winsize, step=1, visible=True)
-        refid = gr.Slider(label="Scene Graph: Id", value=0, minimum=0,
-                              maximum=num_files - 1, step=1, visible=False)
+        return gr.update(visible=True, value=max_winsize, maximum=max_winsize), gr.update(visible=False)
     elif scenegraph_type == "oneref":
-        winsize = gr.Slider(label="Scene Graph: Window Size", value=max_winsize,
-                                minimum=1, maximum=max_winsize, step=1, visible=False)
-        refid = gr.Slider(label="Scene Graph: Id", value=0, minimum=0,
-                              maximum=num_files - 1, step=1, visible=True)
+        return gr.update(visible=False), gr.update(visible=True, maximum=num_files - 1)
     else:
-        winsize = gr.Slider(label="Scene Graph: Window Size", value=max_winsize,
-                                minimum=1, maximum=max_winsize, step=1, visible=False)
-        refid = gr.Slider(label="Scene Graph: Id", value=0, minimum=0,
-                              maximum=num_files - 1, step=1, visible=False)
-    return winsize, refid
+        return gr.update(visible=False), gr.update(visible=False)
 
+
+# -----------------------------------------------------------------------------
+# 4. Main Demo UI
+# -----------------------------------------------------------------------------
 
 def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
     
+    # Partial Functions
     recon_fun = functools.partial(get_reconstructed_scene, tmpdirname, pe3r, device, silent)
     model_from_scene_fun = functools.partial(get_3D_model_from_scene, tmpdirname, silent)
     get_3D_object_from_scene_fun = functools.partial(get_3D_object_from_scene, tmpdirname, pe3r, silent)
 
-    # [수정됨] 모델 파일 생성 후 camera_position을 강제로 업데이트하지 않습니다.
-    # 뷰어가 파일 로드 시 자동으로 최적의 시점을 잡도록 둡니다.
+    # [추가됨] 초기 생성 시 상단/하단 모델 모두에 결과를 뿌리기 위한 Wrapper
     def initial_recon_wrapper(*args):
         scene_obj, model_path, gallery_imgs = recon_fun(*args)
         
         return (
             scene_obj, 
-            model_path, # camera_position 제거, 단순 파일 경로만 리턴
-            model_path, 
+            model_path, # 상단 모델(outmodel)용 경로
+            model_path, # 하단 모델(orig_model_display)용 경로 (원본)
             gallery_imgs
         )
 
+    # JSON Savers
     def save_style_json(selected_style):
         data = {"selected_style": selected_style}
         try:
@@ -487,6 +550,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         except Exception as e:
             print(f"❌ [Error] 유저 선택 저장 실패: {e}")
 
+    # Analysis & UI Updaters
     def read_report_file(filename="report_analysis_result.txt"):
         if os.path.exists(filename):
             try:
@@ -511,24 +575,23 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                 print(f"❌ [Error] 분석 모듈 실행 실패: {e}")
                 return f"### 분석 오류 발생\n{str(e)}", gr.update(visible=False), gr.update(visible=False)
         else:
-            return "### 분석 모듈 로드 실패\nmain_report.py를 찾을 수 없습니다.", gr.update(visible=False), gr.update(visible=False)
+            return "### 분석 모듈 로드 실패", gr.update(visible=False), gr.update(visible=False)
 
         report_text = read_report_file("report_analysis_result.txt")
-        return report_text, gr.update(visible=True, open=True), gr.update(visible=True, open=True)
+        return report_text, gr.update(visible=True, open=True), gr.update(visible=True, open=True), gr.update(visible=True)
     
-    def generate_and_load_new_images():
-        if main_new_looks:
+    def load_generated_images(module_func, module_name):
+        if module_func:
             try:
-                print("🎨 [Info] 새로운 룩 생성 시작...")
-                main_new_looks()
+                print(f"🎨 [Info] {module_name} 실행 중...")
+                module_func()
             except Exception as e:
-                print(f"❌ [Error] 이미지 생성 실패: {e}")
+                print(f"❌ [Error] {module_name} 실패: {e}")
         else:
-            print("⚠️ Error: main_new_looks 모듈이 로드되지 않았습니다.")
+            print(f"⚠️ Error: {module_name} 모듈이 로드되지 않았습니다.")
 
         output_dir = os.path.join(os.getcwd(), "apioutput")
         if not os.path.exists(output_dir):
-            print(f"⚠️ Warning: {output_dir} 폴더가 존재하지 않습니다.")
             return []
 
         files = glob.glob(os.path.join(output_dir, "*.[pP][nN][gG]")) + \
@@ -536,41 +599,21 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                 glob.glob(os.path.join(output_dir, "*.[jJ][pP][eE][gG]"))
         
         files.sort(key=os.path.getmtime, reverse=True)
-        selected_files = files[:3]
-        print(f"📂 [Info] 로드된 파일: {selected_files}")
-        return selected_files
+        return files[:3]
+
+    def generate_and_load_new_images():
+        return load_generated_images(main_new_looks, "main_new_looks")
 
     def generate_and_load_modified_images():
-        if main_modify_looks:
-            try:
-                print("🎨 [Info] 새로운 룩 생성 시작...")
-                main_modify_looks()
-            except Exception as e:
-                print(f"❌ [Error] 이미지 생성 실패: {e}")
-        else:
-            print("⚠️ Error: main_modify_looks 모듈이 로드되지 않았습니다.")
-
-        output_dir = os.path.join(os.getcwd(), "apioutput")
-        if not os.path.exists(output_dir):
-            print(f"⚠️ Warning: {output_dir} 폴더가 존재하지 않습니다.")
-            return []
-
-        files = glob.glob(os.path.join(output_dir, "*.[pP][nN][gG]")) + \
-                glob.glob(os.path.join(output_dir, "*.[jJ][pP][gG]")) + \
-                glob.glob(os.path.join(output_dir, "*.[jJ][pP][eE][gG]"))
-        
-        files.sort(key=os.path.getmtime, reverse=True)
-        selected_files = files[:3]
-        print(f"📂 [Info] 로드된 파일: {selected_files}")
-        return selected_files
+        return load_generated_images(main_modify_looks, "main_modify_looks")
     
+    # Backup & Restore Logic
     def backup_original_scene(scene, input_files):
         saved_paths = []
         if input_files:
             for f in input_files:
                 path = f.name if hasattr(f, 'name') else f
                 saved_paths.append(path)
-        
         print(f"💾 [Backup] Scene과 파일 {len(saved_paths)}개가 원본으로 백업되었습니다.")
         return scene, saved_paths
     
@@ -578,7 +621,6 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         print("💾 [Backup] 분석 리포트 텍스트 백업 완료")
         return report_text
 
-    # [수정됨] 원본 복구 시에도 camera_position 강제 업데이트 삭제
     def restore_original_scene(orig_scene, orig_inputs, orig_report, min_conf_thr, as_pointcloud, mask_sky, clean_depth, transparent_cams, cam_size):
         if orig_scene is None:
             return gr.update(), gr.update(), gr.update(), "⚠️ 저장된 원본이 없습니다."
@@ -587,65 +629,38 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             print("🔄 [Restore] 마스킹된 이미지를 원본으로 복구 중...")
             orig_scene.ori_imgs = [img.copy() for img in orig_scene.backup_imgs]
             orig_scene.imgs = [img.copy() for img in orig_scene.backup_imgs]
-            
+        
         restored_model_path = model_from_scene_fun(
             orig_scene, min_conf_thr, as_pointcloud, mask_sky, clean_depth, transparent_cams, cam_size
         )
+        
         restored_report = orig_report if orig_report else "🔄 원본 리포트가 없습니다."
-
         print("↩️ [Restore] 원본 Scene 및 리포트 되돌리기 완료")
-        
-        return (
-            orig_scene, 
-            restored_model_path, 
-            orig_inputs, 
-            restored_report
-        )
+        return orig_scene, restored_model_path, orig_inputs, restored_report
 
+    # IR Gallery Logic
     def run_and_display(input_files):
-        image_paths = []
-        if input_files:
-            for f in input_files:
-                path = f.name if hasattr(f, 'name') else f
-                image_paths.append(path)
-        else:
-            print('no input')
-
-        url_dict, mask_list, ordered_ids = listup(input_files)
+        if not input_files: return [], [], []
         
+        url_dict, mask_list, ordered_ids = listup(input_files)
         gallery_data = []
-        for folder_id, url in url_dict.items():
+        for _, url in url_dict.items():
             try:
                 response = requests.get(url[0])
                 image = Image.open(BytesIO(response.content))
-                caption = f"Model Name : {url[1]}"
-                gallery_data.append((image, caption))
-            except Exception as e:
-                print(f"Error loading image from {url[0]}: {e}")
-                continue
-                
+                gallery_data.append((image, f"Model Name : {url[1]}"))
+            except: continue
         return gallery_data, mask_list, ordered_ids
     
-    def on_gallery_select(scene, mask_data, id_list, 
-                                          conf, pc, sky, clean, trans, size, 
-                                          evt: gr.SelectData):
-                    return highlight_selected_object(
-                        scene, mask_data, id_list, 
-                        conf, pc, sky, clean, trans, size, 
-                        evt, 
-                        outdir=tmpdirname 
-                    )
+    def on_gallery_select(scene, mask_data, id_list, conf, pc, sky, clean, trans, size, evt: gr.SelectData): 
+        return highlight_selected_object(scene, mask_data, id_list, conf, pc, sky, clean, trans, size, evt, outdir=tmpdirname)
 
+    # -------------------------------------------------------------------------
+    # Layout Definition
     # -------------------------------------------------------------------------
 
     with gr.Blocks(title="IF U Demo", fill_width=True) as demo:
-        scene = gr.State(None)
 
-        original_scene = gr.State(None)        
-        original_inputfiles = gr.State(None)
-        original_report_text = gr.State(None) 
-        mask_data_state = gr.State([])
-        object_id_list_state = gr.State([])
         interior_styles = [
             "AI 추천",
             "모던 Modern Interior",
@@ -687,11 +702,19 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             "매시큘린 Masculine Interior Design",
             "페미닌 Feminine Room Decor"
         ]
+        
+        # State Variables
+        scene = gr.State(None)
+        original_scene = gr.State(None)        
+        original_inputfiles = gr.State(None)
+        original_report_text = gr.State(None) 
+        mask_data_state = gr.State([])
+        object_id_list_state = gr.State([])
 
-        gr.Markdown("##🛋️ IF U Demo")
+        gr.Markdown("## 🧊 IF U Demo")
 
         with gr.Row():
-            # --- 좌측 패널 (설정) ---
+            # --- Left Panel ---
             with gr.Column(scale=1, min_width=320):
                 inputfiles = gr.File(file_count="multiple", label="Input Images")
                 
@@ -712,30 +735,32 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                     clean_depth = gr.Checkbox(value=True, visible=False)
 
                 run_btn = gr.Button("3D로 변환", variant="primary", elem_classes=["primary-btn"])
-                IR_btn = gr.Button("배치된 가구 제품명 찾기", variant="primary", elem_classes=["primary-btn"])
-                
+                IR_btn = gr.Button("배치된 가구 제품명 찾기", variant="primary", elem_classes=["primary-btn"], visible=False)
                 revert_btn = gr.Button("↩️ 원본 되돌리기", variant="secondary")
-
+                
                 with gr.Accordion("🎨 분석리포트 적용", open=True, visible=False) as analysis_accordion:
                     add = gr.Checkbox(value=False, label="가구 배치 제안 반영해보기")
                     delete = gr.Checkbox(value=False, label="가구 제거 제안 반영해보기")
                     change = gr.Checkbox(value=False, label="가구 변경 제안 반영해보기")
                     run_suggested_change_btn= gr.Button("결과 생성", variant="primary")
-                with gr.Accordion("방 분위기 바꿔보기", open=False, visible=False) as analysis_accordion1:
-                    style = gr.Dropdown(interior_styles, label="style")
+                with gr.Accordion("방 분위기 바꿔보기", open=True, visible=False) as analysis_accordion1:
+                    style = gr.Dropdown(interior_styles, value ="AI추천" , label="style", interactive=True)
                     run_style_change_btn = gr.Button("결과 생성", variant="primary")
 
-            # --- 우측 패널 (3D 뷰어 2개 배치) ---
-            with gr.Column(scale=5):
-                # [위쪽] 현재 상태 (변경됨)
-                outmodel = gr.Model3D(
-                    label="Current Model (Modified Look)", 
-                    interactive=True,
-                    height="65vh",
-                    # camera_position을 제거하고 초기 뷰를 뷰어에게 맡깁니다.
-                )
+
                 
-                # [아래쪽] 원본 상태 (고정됨)
+                # Hidden Find Button (integrated logic)
+                with gr.Row(visible=False):
+                    text_input = gr.Textbox(label="Query Text")
+                    threshold = gr.Slider(label="Threshold", value=0.85)
+                    find_btn = gr.Button("Find")
+
+            # --- Right Panel ---
+            with gr.Column(scale=2):
+                # [수정됨] 상단 뷰어 (65vh)
+                outmodel = gr.Model3D(label="3D Reconstruction Result", interactive=True, height="65vh")
+                
+                # [추가됨] 하단 뷰어 (25vh, 원본)
                 orig_model_display = gr.Model3D(
                     label="Original Model (Reference)", 
                     interactive=True,
@@ -748,109 +773,52 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                     elem_classes=["report-box"]
                 )
                 outgallery = gr.Gallery(visible=False)
-
-            with gr.Column(scale=1):
+            
+            with gr.Column():
                 result_gallery = gr.Gallery(
                     label="Detected Objects", 
-                    columns=1,            
-                    height="auto",        
-                    object_fit="contain"  
+                    columns=1, 
+                    height="auto", 
+                    object_fit="contain" 
                 )
                 
+                IR_btn.click(
+                    fn=run_and_display, 
+                    inputs=[inputfiles], 
+                    outputs=[result_gallery, mask_data_state, object_id_list_state] 
+                )
+
         # ---------------------------------------------------------------------
-        # [이벤트 연결]
+        # Event Wiring
         # ---------------------------------------------------------------------
-
-        IR_btn.click(
-            fn=run_and_display, 
-            inputs=[inputfiles], 
-            outputs=[result_gallery, mask_data_state, object_id_list_state]
-        )
-
-        result_gallery.select(
-                fn=on_gallery_select,
-                inputs=[
-                    scene,                  
-                    mask_data_state,        
-                    object_id_list_state, 
-                    min_conf_thr,           
-                    as_pointcloud,          
-                    mask_sky,               
-                    clean_depth,            
-                    transparent_cams,       
-                    cam_size                
-                ],
-                outputs=outmodel
-            )
-
-        # 1. [초기 생성]
+        
+        # 1. 3D Reconstruction Flow
+        # [수정됨] initial_recon_wrapper 사용 및 output에 orig_model_display 추가
         recon_event = run_btn.click(
-            fn=initial_recon_wrapper, 
+            fn=initial_recon_wrapper,
             inputs=[inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
                     mask_sky, clean_depth, transparent_cams, cam_size,
                     scenegraph_type, winsize, refid],
-            outputs=[scene, outmodel, orig_model_display, outgallery] 
+            outputs=[scene, outmodel, orig_model_display, outgallery]
         )
         
         recon_event.success(
             fn=backup_original_scene,
             inputs=[scene, inputfiles],
             outputs=[original_scene, original_inputfiles]
-        )
-
-        analysis_step = recon_event.then(
-            fn=lambda: "⏳ 3D 생성이 완료되었습니다. 공간 분위기를 분석 중입니다...",
-            inputs=None,
-            outputs=analysis_output
-        )
-
-        finish_analysis_step = analysis_step.then(
+        ).then(
+            fn=lambda: "⏳ 3D 생성이 완료되었습니다. 공간 분위기를 분석 중입니다...", outputs=analysis_output
+        ).then(
             fn=run_analysis_and_show_ui,
             inputs=[inputfiles],
-            outputs=[analysis_output, analysis_accordion, analysis_accordion1]
-        )
-
-        finish_analysis_step.success(
+            outputs=[analysis_output, analysis_accordion, analysis_accordion1,IR_btn]
+        ).success(
             fn=backup_original_report,
             inputs=[analysis_output],
             outputs=[original_report_text]
         )
 
-        # ---------------------------------------------------------------------
-        # [수정/스타일 변경 이벤트]
-        # ---------------------------------------------------------------------
-        
-        suggestion_event = run_style_change_btn.click(
-            fn=generate_and_load_new_images,
-            inputs=None,
-            outputs=inputfiles
-        )
-
-        suggestion_recon_event = suggestion_event.then(
-            fn=recon_fun,
-            inputs=[inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
-                    mask_sky, clean_depth, transparent_cams, cam_size,
-                    scenegraph_type, winsize, refid],
-            outputs=[scene, outmodel, outgallery]
-        )
-
-        modify_event = run_suggested_change_btn.click(
-            fn=generate_and_load_modified_images,
-            inputs=None,
-            outputs=inputfiles
-        )
-
-        modify_recon_event = modify_event.then(
-            fn=recon_fun,
-            inputs=[inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
-                    mask_sky, clean_depth, transparent_cams, cam_size,
-                    scenegraph_type, winsize, refid],
-            outputs=[scene, outmodel, outgallery]
-        )
-
-        # ---------------------------------------------------------------------
-        # [되돌리기]
-        # ---------------------------------------------------------------------
+        # 2. Revert Flow
         revert_btn.click(
             fn=restore_original_scene,
             inputs=[original_scene, original_inputfiles, original_report_text, 
@@ -858,25 +826,66 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             outputs=[scene, outmodel, inputfiles, analysis_output]
         )
 
-        #----------------------------------------------------------
-        # 설정값 변경
-        # -------------------------------------------------------
-        style.change(fn=save_style_json, inputs=[style], outputs=None)
+        # 3. Style Change Flow
+        run_style_change_btn.click(
+            fn=generate_and_load_new_images, inputs=None, outputs=inputfiles
+        ).then(
+            fn=recon_fun,
+            inputs=[inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
+                    mask_sky, clean_depth, transparent_cams, cam_size,
+                    scenegraph_type, winsize, refid],
+            outputs=[scene, outmodel, outgallery]
+        ).then(
+            fn=lambda: "⏳ 새로운 디자인을 3D로 변환 중입니다. 다시 분석 중...", outputs=analysis_output
+        ).then(
+            fn=run_analysis_and_show_ui,
+            inputs=[inputfiles],
+            outputs=[analysis_output, analysis_accordion, analysis_accordion1, IR_btn]
+        )
 
-        checkbox_inputs = [add, delete, change]
-        add.change(fn=save_user_choice_json, inputs=checkbox_inputs, outputs=None)
-        delete.change(fn=save_user_choice_json, inputs=checkbox_inputs, outputs=None)
-        change.change(fn=save_user_choice_json, inputs=checkbox_inputs, outputs=None)
+        # 4. Modify Flow
+        run_suggested_change_btn.click(
+            fn=generate_and_load_modified_images, inputs=None, outputs=inputfiles
+        ).then(
+            fn=recon_fun,
+            inputs=[inputfiles, schedule, niter, min_conf_thr, as_pointcloud,
+                    mask_sky, clean_depth, transparent_cams, cam_size,
+                    scenegraph_type, winsize, refid],
+            outputs=[scene, outmodel, outgallery]
+        ).then(
+            fn=lambda: "⏳ 새로운 디자인을 3D로 변환 중입니다. 다시 분석 중...", outputs=analysis_output
+        ).then(
+            fn=run_analysis_and_show_ui,
+            inputs=[inputfiles],
+            outputs=[analysis_output, analysis_accordion, analysis_accordion1, IR_btn]
+        )
+
+        # 5. IR Gallery Interaction
+        result_gallery.select(
+            fn=on_gallery_select,
+            inputs=[scene, mask_data_state, object_id_list_state, 
+                    min_conf_thr, as_pointcloud, mask_sky, clean_depth, transparent_cams, cam_size],
+            outputs=outmodel
+        )
+
+        # 6. Find Button (Legacy but kept functionality)
+        find_btn.click(fn=get_3D_object_from_scene_fun,
+             inputs=[text_input, threshold, scene, min_conf_thr, as_pointcloud, mask_sky,
+                     clean_depth, transparent_cams, cam_size],
+             outputs=outmodel)
+
+        # 7. Other Settings
+        style.change(fn=save_style_json, inputs=[style], outputs=None)
+        add.change(fn=save_user_choice_json, inputs=[add, delete, change], outputs=None)
+        delete.change(fn=save_user_choice_json, inputs=[add, delete, change], outputs=None)
+        change.change(fn=save_user_choice_json, inputs=[add, delete, change], outputs=None)
 
         scenegraph_type.change(set_scenegraph_options, [inputfiles, winsize, refid, scenegraph_type], [winsize, refid])
         inputfiles.change(set_scenegraph_options, [inputfiles, winsize, refid, scenegraph_type], [winsize, refid])
         
         update_inputs = [scene, min_conf_thr, as_pointcloud, mask_sky, clean_depth, transparent_cams, cam_size]
-        min_conf_thr.release(fn=model_from_scene_fun, inputs=update_inputs, outputs=outmodel)
-        cam_size.change(fn=model_from_scene_fun, inputs=update_inputs, outputs=outmodel)
-        as_pointcloud.change(fn=model_from_scene_fun, inputs=update_inputs, outputs=outmodel)
-        mask_sky.change(fn=model_from_scene_fun, inputs=update_inputs, outputs=outmodel)
-        clean_depth.change(fn=model_from_scene_fun, inputs=update_inputs, outputs=outmodel)
-        transparent_cams.change(model_from_scene_fun, inputs=update_inputs, outputs=outmodel)
+        for elem in [min_conf_thr, cam_size, as_pointcloud, mask_sky, clean_depth, transparent_cams]:
+            if isinstance(elem, gr.Slider): elem.release(fn=model_from_scene_fun, inputs=update_inputs, outputs=outmodel)
+            else: elem.change(fn=model_from_scene_fun, inputs=update_inputs, outputs=outmodel)
 
     demo.launch(share=True, server_name=server_name, server_port=server_port)
