@@ -89,7 +89,7 @@ def IR():
 
     print("\n===== 유사도 검색 시작 =====")
 
-    # --- 2. FAISS 인덱스 로컬 파일에서 로드 ---
+    # FAISS 인덱스 로컬 파일에서 로드
     loaded_index = None
     try:
         if os.path.exists(INDEX_FILE_PATH):
