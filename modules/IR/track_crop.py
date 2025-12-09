@@ -3,6 +3,7 @@ from ultralytics import YOLOE
 from .crop_by_result import crop_by_result 
 import os
 import shutil
+import torch
 
 def crop(img_path):
 
@@ -15,11 +16,26 @@ def crop(img_path):
             print(f"⚠️ 초기화 실패: {e}")
             
     # ------------------------------------
-    # 모델 설정 (기존과 동일)
-    overrides = dict(conf=0.01, task="segment", mode="predict", imgsz=1024, model="sam2_t.pt", save=False)
+    # GPU 사용 가능 여부 확인 및 device 설정
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    print(f"⚙️ 추론 장치 설정: {device}")
+    
+    # SAM2 Predictor 설정
+    overrides = dict(conf=0.01, 
+                     task="segment", 
+                     mode="predict", 
+                     imgsz=1024, 
+                     model="sam2_t.pt", 
+                     save=False,
+                     device=device)
     predictor = SAM2DynamicInteractivePredictor(overrides=overrides, max_obj_num=50)
 
+    # YOLOE 모델 로드 및 GPU로 이동
     model = YOLOE('yoloe-11l-seg.pt')
+    if device.startswith("cuda"):
+        model.to(device) # 👈 YOLOE 모델을 GPU 메모리로 이동
+        print("✅ YOLOE 모델을 GPU로 로드했습니다.")
+
     names = [
         "Kitchen Cabinet", "Mini Kitchen", "Kitchen Island/Cart", "Kitchen Appliance", 
         "Kitchen Countertop", "Kitchen Pantry", "Kitchen System", "Office Desk/Chair Set", 
