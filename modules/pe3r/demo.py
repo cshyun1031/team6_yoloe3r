@@ -714,7 +714,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
     # UI 레이아웃 정의
     # -------------------------------------------------------------------------
 
-    with gr.Blocks(title="IF U Demo", fill_width=True) as demo:
+    with gr.Blocks(title="IF U", fill_width=True) as demo:
 
         interior_styles = [
             "AI 추천", "모던 Modern Interior", "미니멀리즘 Minimalist Interior", "스칸디나비아/북유럽 Scandinavian Home",
@@ -740,7 +740,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         mask_data_state = gr.State([])
         object_id_list_state = gr.State([])
 
-        gr.Markdown("## IF U Demo")
+        gr.Markdown("## IF U")
 
         with gr.Row():
             # --- 좌측 패널 (입력 및 설정) ---
