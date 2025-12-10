@@ -25,6 +25,6 @@ class Models:
         self.sam2 = SAM2VideoPredictor.from_pretrained('facebook/sam2.1-hiera-large', device=device)
 
         self.seg_model = YOLO("/content/PE3R/yoloe-11l-seg.pt")
-        self.seg_model.set_classes(["bed", "chair", "desk","table",'book','sofa'])
+        #self.seg_model.set_classes(["bed", "chair", "desk","table",'book','sofa'])
         # -- siglip --
       
