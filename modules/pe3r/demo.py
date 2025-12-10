@@ -778,7 +778,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                 IR_btn = gr.Button("배치된 가구 제품명 찾기", variant="primary", elem_classes=["primary-btn"], visible=False)
                 revert_btn = gr.Button("↩️ 원본 되돌리기", variant="secondary")
                 
-                with gr.Accordion("🎨 가구 변경해보기", open=True, visible=True) as analysis_accordion:
+                with gr.Accordion("🎨 가구 변경해보기", open=True, visible=False) as analysis_accordion:
                     text_input = gr.Textbox(label="Query Text")
                     run_suggested_change_btn= gr.Button("결과 생성", variant="primary")
                 with gr.Accordion("방 분위기 바꿔보기", open=True, visible=False) as analysis_accordion1:
