@@ -21,6 +21,18 @@ cd team6_yoloe3r
 pip install -r requirements.txt
 ```
 
+#### Setting 
+
+```Python
+# config.py
+API_KEY = "YOUR_GOOGLE_GENAI_API_KEY_HERE" # type your own api
+INITIAL_IMAGE_PATHS = [
+    "path/to/your/initial_image_-30degree.jpg", # -30degree picture
+    "path/to/your/initial_image_original.jpg", # original picture
+    "path/to/your/initial_image_30degree.jpg" # 30 degree picture
+]
+# ...
+```
 
 #### Usage
 ```bash
