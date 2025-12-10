@@ -132,8 +132,8 @@ def make_one_image_to_three(api_key: str, model_name: str, input_image_path: str
                     final_prompt
                 ],
                 config=types.GenerateContentConfig(
-                    temperature=0.1,  # 온도 설정 (0.1): 결과물의 일관성을 높이고 창의성을 낮추기.
-                    top_p=0.3         # Top-P 누클리어스 샘플링 설정 (0.3) : 확률이 높은 답을 내놓을 가능성을 높이기.
+                    temperature=0.3,  # 온도 설정 (0.3): 온도가 낮을수록 결과물의 일관성이 높아지고 창의성을 낮아짐.
+                    top_p=0.3         # Top-P 누클리어스 샘플링 설정 (0.3) : Top-P 값이 낮을수록 확률이 높은 답을 내놓을 가능성을 높아짐.
                     # 모델이 이미지를 반환하도록 설정. (모델 스펙에 따라 파라미터가 다를 수 있음)
                     # 만약 순수 Imagen 모델이라면 generate_images 메서드를 써야 할 수도 있음.
                     # 여기서는 Gemini 멀티모달(입력:이미지+텍스트 -> 출력:이미지)을 가정.

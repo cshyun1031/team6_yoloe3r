@@ -9,7 +9,7 @@ from google.genai import types
 
 # ------ 한 작업에서 허용할 재요청 횟수 ------ 
 MAX_GEN_RETRY = 1          # 이미지 생성 실패 시 추가 재시도 횟수
-MAX_VALIDATE_RETRY = 2     # 검수 통과 실패 시 재시도 횟수
+MAX_VALIDATE_RETRY = 1     # 검수 통과 실패 시 재시도 횟수
 
 
 def ensure_image_generated(
@@ -160,6 +160,7 @@ def check_prompt_compliance(
                 contents=contents,
                 config=types.GenerateContentConfig(
                     temperature=0.0,
+                    top_p=0.3
                 ),
             )
 

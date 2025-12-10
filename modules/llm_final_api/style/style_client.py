@@ -28,7 +28,8 @@ def run_style_model(api_key, model_name, image_path, prompt):
             prompt,
         ],
         config=types.GenerateContentConfig(
-            temperature=1.0,
+            temperature=1.2,
+            top_p=0.9,
         )
     )
 

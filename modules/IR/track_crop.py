@@ -51,6 +51,10 @@ def crop(img_path):
     ]
 
     imgs = img_path
+
+    # 모든 프레임의 마스크 데이터를 모을 리스트
+    # 구조: [ { "Sofa_0": mask_array, "Table_1": mask_array }, ... ]
+    all_frames_masks = [] 
     
 
     # ID <-> Class Name 매핑 딕셔너리
