@@ -472,11 +472,11 @@ def highlight_selected_object(
     UI 갤러리에서 선택된 가구 객체를 파란색 틴트로 하이라이트하고 3D 모델을 업데이트하는 함수.
     """
     if scene is None or not mask_list:
-        print("Scene or mask_list is empty.")
+        print("⚠️ Scene or mask_list is empty.")
         return None
 
     if evt is None or not isinstance(evt, gr.SelectData):
-        print(f"Error: evt is {type(evt)}. Gradio failed to pass SelectData.")
+        print(f"⚠️ Error: evt is {type(evt)}. Gradio failed to pass SelectData.")
         return None
 
     selected_index = evt.index
@@ -487,7 +487,7 @@ def highlight_selected_object(
         return None
         
     target_obj_id = object_id_list[selected_index] 
-    print(f"[Highlight] Target Object: {target_obj_id}")
+    print(f"🎯 [Highlight] Target Object: {target_obj_id}")
 
     if not hasattr(scene, 'backup_imgs'):
         scene.backup_imgs = [img.copy() for img in scene.ori_imgs]
@@ -581,9 +581,9 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         try:
             with open("modules/llm_final_api/style_choice.json", "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
-            print(f"[Saved] style_choice.json: {data}")
+            print(f"💾 [Saved] style_choice.json: {data}")
         except Exception as e:
-            print(f"[Error] 스타일 저장 실패: {e}")
+            print(f"❌ [Error] 스타일 저장 실패: {e}")
 
     # 유저 선택(추가/삭제/변경) 저장 함수
     def save_user_choice_json(use_add, use_remove, use_change):
@@ -595,20 +595,9 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         try:
             with open("modules/llm_final_api/user_choice.json", "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
-            print(f"[Saved] user_choice.json: {data}")
+            print(f"💾 [Saved] user_choice.json: {data}")
         except Exception as e:
-            print(f"[Error] 유저 선택 저장 실패: {e}")
-
-    def save_user_choice_json_query(user_query):
-        data = {
-            "user_choice": user_query
-        }
-        try:
-            with open("modules/llm_final_api/user_choice.json", "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
-            print(f"[Saved] user_choice.json: {data}")
-        except Exception as e:
-            print(f"[Error] 유저 선택 저장 실패: {e}")
+            print(f"❌ [Error] 유저 선택 저장 실패: {e}")
 
     # 리포트 파일 읽기 함수
     def read_report_file(filename="report_analysis_result.txt"):
@@ -618,7 +607,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                     return f.read()
             except Exception as e:
                 return f"파일 읽기 오류: {str(e)}"
-        return "분석 결과 파일이 생성되지 않았습니다."
+        return "⚠️ 분석 결과 파일이 생성되지 않았습니다."
 
     # 분석 실행 및 UI 업데이트 함수
     def run_analysis_and_show_ui(input_files):
@@ -630,10 +619,10 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         
         if main_report:
             try:
-                print(f"[Info] 이미지 분석 시작 ({len(image_paths)}장)...")
+                print(f"📊 [Info] 이미지 분석 시작 ({len(image_paths)}장)...")
                 main_report(image_paths) 
             except Exception as e:
-                print(f"[Error] 분석 모듈 실행 실패: {e}")
+                print(f"❌ [Error] 분석 모듈 실행 실패: {e}")
                 return f"### 분석 오류 발생\n{str(e)}", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
         else:
             return "### 분석 모듈 로드 실패", gr.update(visible=False), gr.update(visible=False), gr.update(visible=False)
@@ -646,12 +635,12 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
     def load_generated_images(module_func, module_name):
         if module_func:
             try:
-                print(f"[Info] {module_name} 실행 중...")
+                print(f"🎨 [Info] {module_name} 실행 중...")
                 module_func()
             except Exception as e:
-                print(f"[Error] {module_name} 실패: {e}")
+                print(f"❌ [Error] {module_name} 실패: {e}")
         else:
-            print(f"Error: {module_name} 모듈이 로드되지 않았습니다.")
+            print(f"⚠️ Error: {module_name} 모듈이 로드되지 않았습니다.")
 
         output_dir = os.path.join(os.getcwd(), "apioutput")
         if not os.path.exists(output_dir):
@@ -677,12 +666,12 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             for f in input_files:
                 path = f.name if hasattr(f, 'name') else f
                 saved_paths.append(path)
-        print(f"[Backup] Scene과 파일 {len(saved_paths)}개가 원본으로 백업되었습니다.")
+        print(f"💾 [Backup] Scene과 파일 {len(saved_paths)}개가 원본으로 백업되었습니다.")
         return scene, saved_paths
     
     # 원본 리포트 백업 함수
     def backup_original_report(report_text):
-        print("[Backup] 분석 리포트 텍스트 백업 완료")
+        print("💾 [Backup] 분석 리포트 텍스트 백업 완료")
         return report_text
 
     # 원본 복구(Undo) 함수
@@ -691,7 +680,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             return gr.update(), gr.update(), gr.update(), "⚠️ 저장된 원본이 없습니다."
         
         if hasattr(orig_scene, 'backup_imgs'):
-            print("[Restore] 마스킹된 이미지를 원본으로 복구 중...")
+            print("🔄 [Restore] 마스킹된 이미지를 원본으로 복구 중...")
             orig_scene.ori_imgs = [img.copy() for img in orig_scene.backup_imgs]
             orig_scene.imgs = [img.copy() for img in orig_scene.backup_imgs]
         
@@ -700,7 +689,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
         )
         
         restored_report = orig_report if orig_report else "🔄 원본 리포트가 없습니다."
-        print("[Restore] 원본 Scene 및 리포트 되돌리기 완료")
+        print("↩️ [Restore] 원본 Scene 및 리포트 되돌리기 완료")
         return orig_scene, restored_model_path, orig_inputs, restored_report
 
     # IR(이미지 검색) 실행 및 갤러리 표시 함수
@@ -778,12 +767,20 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
                 IR_btn = gr.Button("배치된 가구 제품명 찾기", variant="primary", elem_classes=["primary-btn"], visible=False)
                 revert_btn = gr.Button("↩️ 원본 되돌리기", variant="secondary")
                 
-                with gr.Accordion("🎨 가구 변경해보기", open=True, visible=False) as analysis_accordion:
-                    text_input = gr.Textbox(label="Query Text")
+                with gr.Accordion("🎨 분석리포트 적용", open=True, visible=False) as analysis_accordion:
+                    add = gr.Checkbox(value=False, label="가구 배치 제안 반영해보기")
+                    delete = gr.Checkbox(value=False, label="가구 제거 제안 반영해보기")
+                    change = gr.Checkbox(value=False, label="가구 변경 제안 반영해보기")
                     run_suggested_change_btn= gr.Button("결과 생성", variant="primary")
                 with gr.Accordion("방 분위기 바꿔보기", open=True, visible=False) as analysis_accordion1:
                     style = gr.Dropdown(interior_styles, value ="AI 추천" , label="style", interactive=True)
                     run_style_change_btn = gr.Button("결과 생성", variant="primary")
+
+                # (Legacy) 숨겨진 텍스트 검색 UI
+                with gr.Row(visible=False):
+                    text_input = gr.Textbox(label="Query Text")
+                    threshold = gr.Slider(label="Threshold", value=0.85)
+                    find_btn = gr.Button("Find")
 
             # --- 우측 패널 (3D 뷰어 및 결과) ---
             with gr.Column(scale=2):
@@ -836,7 +833,7 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             inputs=[scene, inputfiles],
             outputs=[original_scene, original_inputfiles]
         ).then(
-            fn=lambda: "3D 생성이 완료되었습니다. 공간 분위기를 분석 중입니다...", outputs=analysis_output
+            fn=lambda: "⏳ 3D 생성이 완료되었습니다. 공간 분위기를 분석 중입니다...", outputs=analysis_output
         ).then(
             fn=run_analysis_and_show_ui,
             inputs=[inputfiles],
@@ -887,11 +884,17 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             outputs=outmodel
         )
 
+        # 6. (Legacy) 텍스트 검색 버튼
+        find_btn.click(fn=get_3D_object_from_scene_fun,
+             inputs=[text_input, threshold, scene, min_conf_thr, as_pointcloud, mask_sky,
+                     clean_depth, transparent_cams, cam_size],
+             outputs=outmodel)
 
         # 7. 기타 설정 변경 이벤트
         style.change(fn=save_style_json, inputs=[style], outputs=None)
-        text_input.change(fn=save_user_choice_json_query, inputs=[text_input], outputs=None)
-        
+        add.change(fn=save_user_choice_json, inputs=[add, delete, change], outputs=None)
+        delete.change(fn=save_user_choice_json, inputs=[add, delete, change], outputs=None)
+        change.change(fn=save_user_choice_json, inputs=[add, delete, change], outputs=None)
 
         scenegraph_type.change(set_scenegraph_options, [inputfiles, winsize, refid, scenegraph_type], [winsize, refid])
         inputfiles.change(set_scenegraph_options, [inputfiles, winsize, refid, scenegraph_type], [winsize, refid])
@@ -902,4 +905,3 @@ def main_demo(tmpdirname, pe3r, device, server_name, server_port, silent=False):
             else: elem.change(fn=model_from_scene_fun, inputs=update_inputs, outputs=outmodel)
 
     demo.launch(share=True, server_name=server_name, server_port=server_port)
-

@@ -1,3 +1,6 @@
 {
-  "user_choice": "나는 내 방에서 천장에 달린 조명들을 없애고 싶어"
+    "use_add": true,
+    "use_remove": true,
+    "use_change": true
+
 }
