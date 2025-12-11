@@ -93,12 +93,12 @@ def create_summary_report_file(parsed_data: Dict[str, Any], raw_report_text: str
 	# Markdown 형식의 요약 리포트 콘텐츠를 구성.
     summary_content = f"""
 
-1. 전체적 분위기 : {mood1_word} ({mood1_percent}%), {mood2_word} ({mood2_percent}%), {mood3_word} ({mood3_percent}%)
+1. 방 전체 분위기 : {mood1_word} ({mood1_percent}%), {mood2_word} ({mood2_percent}%), {mood3_word} ({mood3_percent}%)
 
 2. 가구 추가 / 제거 / 변경 추천
-### 가구 추가: **{add_item}** 
-### 가구 제거: **{rem_item}** 
-### 가구 변경: **{change_item} -> {rec_item}**
+### **가구 추가:{add_item}** 
+### **가구 제거:{rem_item}** 
+### **가구 변경:{change_item} -> {rec_item}**
 
 3. 이런 스타일 어떠세요?
 ### **{rec_style}**
@@ -200,6 +200,7 @@ if __name__ == "__main__":
     except Exception as e:
         # 그 외 예외 처리
         print(f"스크립트 실행 중 예상치 못한 에러 발생: {e}")
+
 
 
 
