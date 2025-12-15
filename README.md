@@ -25,7 +25,8 @@ pip install -r requirements.txt
 
 ```Python
 # config.py
-API_KEY = "YOUR_GOOGLE_GEMINI_API_KEY_HERE" # type your own api
+# Get your API key from Google AI Studio (https://aistudio.google.com/)
+API_KEY = "YOUR_GOOGLE_GEMINI_API_KEY_HERE" # Paste your own Gemini API key here
 INITIAL_IMAGE_PATHS = [
     "path/to/your/-30degree_img.jpg", # -30degree picture
     "path/to/your/original_img.jpg", # original picture
@@ -37,6 +38,12 @@ INITIAL_IMAGE_PATHS = [
 ```bash
 python IFU_demo.py
 ```
+
+#### Notes
+- The necessary database files are already included in this repository, so you do not need to prepare or download a separate DB.
+- In track_crop.py, GPU settings (for example, the CUDA device index) are hard coded.
+- Please update these settings according to your own GPU setup before execution.
+
 
 ### Acknowledgements
 - [DUSt3R](https://github.com/naver/dust3r) / [MASt3R](https://github.com/naver/mast3r) / [PE3R]
