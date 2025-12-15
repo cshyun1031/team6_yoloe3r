@@ -41,8 +41,8 @@ python IFU_demo.py
 
 #### Notes
 - The necessary database files are already included in this repository, so you do not need to prepare or download a separate DB.
-- In track_crop.py, GPU settings (for example, the CUDA device index) are hard coded.
-- Please update these settings according to your own GPU setup before execution.
+- In track_crop.py(modules/IR/track_crop.py), GPU settings (such as the CUDA device index) are hard coded. 
+  Please modify them to match your own GPU environment before running the code.
 
 
 ### Acknowledgements
