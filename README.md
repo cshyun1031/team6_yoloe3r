@@ -34,7 +34,7 @@ INITIAL_IMAGE_PATHS = [
 ]
 ```
 
-#### Usage
+#### Run
 ```bash
 python IFU_demo.py
 ```
