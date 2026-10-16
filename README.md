@@ -1,4 +1,25 @@
 # YOLOE3R
+Turns ordinary room photos into an interactive 3D model, so you can see your space from any angle and try out new furniture with an LLM (Gemini 2.5 Flash).
+
+### Demo
+
+<table>
+  <tr>
+    <th width="40%">Before: room photo</th>
+    <th width="60%">After: 3D reconstruction</th>
+  </tr>
+  <tr>
+    <td><img src="https://github.com/user-attachments/assets/73eaaf45-09c1-41d6-947b-ca1626ef8942" width="100%"/></td>
+    <td><img src="https://github.com/user-attachments/assets/1bb0d820-7093-4402-a572-9db8cc59b025" width="100%"/></td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/fb7e659d-9806-4eb2-bf39-0aeeac247c4e" width="49%"/>
+  <img src="https://github.com/user-attachments/assets/6d964795-d7c2-4258-a424-940fd5f86893" width="49%"/>
+</p>
+<p align="center"><sub>The same room viewed from different angles. Colored frames show the estimated camera positions.</sub></p>
+
 
 
 ### Quick Start
